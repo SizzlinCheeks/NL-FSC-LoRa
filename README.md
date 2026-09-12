@@ -71,6 +71,12 @@ trajectory stops being a straight line, and which don't.
   is swamped by the chirp's own spectral leakage); `joint_cfo_symbol_search`
   /`joint_cfo_symbol_demod` are what actually works -- see
   `09_lora_cfo_correction.png` below.
+- `nlfsc_lora/local_rate.py` -- a much cheaper decoder possible only for a
+  nonlinear `g`: a single local instantaneous-chirp-rate measurement
+  identifies the symbol (CFO-independent, since a constant CFO doesn't
+  change a rate of change) and, once the symbol is known, the CFO too --
+  no correlation against any reference needed at all. Real speedup, real
+  and serious limitations; see `10_local_rate_estimator.png` below.
 
 ## Running it
 
@@ -202,6 +208,39 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   be worth it: it holds 0% SER across the entire CFO sweep tested (out to
   1500 Hz, 3x past where the CFO-blind receiver is already fully
   saturated), at the same SNR.
+- **`10_local_rate_estimator.png`** -- the opposite kind of receiver-side
+  idea: instead of *more* correlation to buy CFO tolerance, use *less* of
+  it to save power. A linear chirp's instantaneous rate `df/dt` is a
+  constant everywhere, so measuring it locally tells you nothing about
+  where in the symbol you are (which is exactly why the FFT-bin shortcut
+  needs the whole record, and why `04`/`09` needed a full correlation or a
+  grid search). A nonlinear trajectory's local rate varies with position in
+  a *known* way, and a constant CFO shifts frequency without touching the
+  rate of change at all -- so a single small window's local rate identifies
+  the symbol independent of CFO, and once the symbol (hence the expected
+  CFO-free frequency) is known, the CFO estimate falls straight out.
+  `nlfsc_lora/local_rate.py` implements this via a local cubic phase fit
+  (exact for `quadratic`'s polynomial law; other trajectories with a
+  transcendental phase law like `hyperbolic` need a smaller window to keep
+  the same fit accurate -- see the two `tests/test_local_rate.py` cases).
+
+  It really is far cheaper -- roughly 10-90x fewer operations per symbol
+  than `matched_filter_bank_demod` in testing here -- but the plot shows
+  why it isn't simply a faster drop-in replacement. There is no equivalent
+  of a full-record correlation's despreading gain, only whatever a small
+  window averages over, so it needs tens of dB more SNR to work at all.
+  Worse, it never actually reaches a usable error rate: it plateaus at
+  roughly 30-40% SER even at 40 dB SNR (effectively noiseless), because a
+  real fraction of the symbol alphabet has its cyclic-shift wrap glitch
+  fall inside the fixed-position measurement window, which corrupts the
+  local phase fit outright rather than just adding noise
+  (`tests/test_local_rate.py::test_default_window_placement_fails_for_a_real_band_of_symbols`
+  measures this directly: more than 1/6 of all `M` symbols fail this way,
+  regardless of noise). So: a real, meaningful compute saving, but not
+  currently an "effective" standalone decoder -- it would need a fix for
+  the glitch-straddling failure (e.g. a small number of candidate windows
+  at different positions with a majority vote) to be usable as one, which
+  this project doesn't implement or test.
 
 ## Extending it
 

@@ -16,11 +16,14 @@ g(t/T). Produces PNGs under examples/output/:
                                     M-ary cyclic-shift decoding instead of a single filter
   09_lora_cfo_correction.png     - SER vs CFO, CFO-blind matched-filter-bank decoding vs.
                                     a joint CFO+symbol search receiver
+  10_local_rate_estimator.png    - SER vs SNR, matched-filter bank vs. a much cheaper
+                                    single-symbol local-chirp-rate decoder
 
 Run with: python examples/run_experiments.py
 """
 
 import os
+import time
 from functools import partial
 
 import matplotlib.pyplot as plt
@@ -28,7 +31,9 @@ import numpy as np
 
 from nlfsc_lora.chirp import ChirpConfig, base_frequency, symbol_waveform
 from nlfsc_lora.doppler import doppler_scale_response
+from nlfsc_lora.local_rate import local_rate_demod, local_rate_ser_vs_snr
 from nlfsc_lora.metrics import autocorrelation, instantaneous_chirp_rate
+from nlfsc_lora.receiver import matched_filter_bank_demod
 from nlfsc_lora.simulate import ser_vs_cfo, ser_vs_doppler_scale, ser_vs_model_mismatch, ser_vs_snr, ser_vs_timing_offset
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
@@ -256,6 +261,48 @@ def plot_lora_cfo_correction():
     plt.close(fig)
 
 
+def plot_local_rate_estimator():
+    """Cheaper than either decoder above: nlfsc_lora.local_rate reads the symbol (and
+    CFO) off a *single local* chirp-rate measurement, needing only a small phase-polyfit
+    window instead of correlating against the whole reference bank -- possible only
+    because a nonlinear g's local rate varies with position (a linear chirp's rate is
+    constant everywhere and carries no positional information at all).
+
+    The tradeoff is real: no despreading gain from a full-record correlation, only
+    whatever the local window averages over, so it needs tens of dB more SNR than
+    matched_filter_bank_demod to work at all -- and it has a hard SER floor even at
+    infinite SNR, from symbols whose cyclic-shift wrap glitch falls inside the
+    (fixed-position) measurement window and corrupts the fit outright.
+    """
+    cfg = cfg_for("quadratic")
+    _, dg = TRAJECTORIES["quadratic"]
+    snr_range = np.arange(-10, 41, 5)
+    n_symbols = 150
+
+    ser_mf = ser_vs_snr(cfg, snr_range, n_symbols=n_symbols, demod="mfbank", seed=SEED)
+    ser_local = local_rate_ser_vs_snr(cfg, dg, snr_range, n_symbols=n_symbols, seed=SEED)
+
+    tx = symbol_waveform(cfg, 33)
+    t0 = time.time()
+    for _ in range(200):
+        matched_filter_bank_demod(tx, cfg)
+    mf_ms = (time.time() - t0) / 200 * 1000
+    t0 = time.time()
+    for _ in range(200):
+        local_rate_demod(tx, cfg, dg)
+    local_ms = (time.time() - t0) / 200 * 1000
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(snr_range, ser_mf, label=f"matched_filter_bank_demod ({mf_ms:.2f} ms/symbol)")
+    ax.plot(snr_range, ser_local, label=f"local_rate_demod ({local_ms:.2f} ms/symbol)")
+    ax.set(xlabel="SNR (dB)", ylabel="symbol error rate",
+           title="SER vs SNR: full correlation vs. a single local rate measurement")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "10_local_rate_estimator.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -267,6 +314,7 @@ def main():
     plot_doppler_scale_tolerance()
     plot_lora_ser_vs_doppler_scale()
     plot_lora_cfo_correction()
+    plot_local_rate_estimator()
     print(f"Wrote figures to {OUT_DIR}")
 
 
