@@ -36,7 +36,8 @@ result — unless and until they are built.
     decoding? **[VALIDATED]**
   - **RQ4** — Can a receiver exploit local rate-of-change measurements at the
     two edges of the swept bandwidth, accumulated across multiple bursts, to
-    self-correct CFO cheaply? **[PROPOSED]**
+    self-correct CFO cheaply? **[VALIDATED]** — see `nlfsc_lora/afc.py` and
+    Chapter 5 below.
 
 ## Chapter 2 — Background & Related Work
 
@@ -140,49 +141,99 @@ One section per finding, in this narrative order:
    window for a real fraction (>1/6, measured directly) of the symbol
    alphabet regardless of noise. This sets up Chapter 5 precisely.
 
-## Chapter 5 — Proposed Extension: Dual-Edge, Multi-Burst AFC **[PROPOSED]**
+## Chapter 5 — Dual-Edge, Multi-Burst AFC **[VALIDATED]**
 
-Not implemented or tested in this repository. Motivate directly from the two
-failure modes measured in Chapter 4.6:
+Implemented in `nlfsc_lora/afc.py`, tested in `tests/test_afc.py` (9 cases),
+demonstrated in `examples/output/12_dual_edge_afc.png`. Addresses the two
+failure modes measured in Chapter 4.6 by design, not by accident:
 
-- **Noise sensitivity → multi-burst accumulation.** A single local-rate
-  measurement is noisy; accumulating or filtering the CFO estimate across a
-  sequence of bursts (a discrete AFC/PLL-style tracking loop) should reduce
-  variance the way integrating any noisy error signal over time does. State
-  and justify a specific accumulation law (simple running average vs.
-  exponential/first-order loop filter) against the AFC/PLL literature rather
-  than leaving it unspecified.
-- **Wrap-glitch collision → dual-edge placement.** Measuring at *both* ends
-  of the swept bandwidth instead of one central window is a different
-  mechanism than what `local_rate.py` implements and tests. State precisely:
-  what is measured at each edge, how the two measurements combine, and
-  whether/how known preamble structure could be used to deliberately place
-  the edge windows away from a given symbol's glitch location.
-- If left unimplemented for the dissertation, present this chapter as a
-  clearly-labeled hypothesis with a stated mechanism and expected effect on
-  the two measured failure modes — not blurred with the validated Chapter 4
-  results.
+- **Noise sensitivity → multi-burst accumulation, not symbol decoding.** The
+  key design decision: use rate/frequency sensing only to *refine a residual
+  CFO estimate for a symbol the receiver already decoded* (via
+  `fft_correlation_demod`, the already-validated, noise-robust decoder from
+  Chapter 3), never to guess the symbol itself the way `local_rate.py` does.
+  This sidesteps `local_rate.py`'s hard noise floor entirely — the edge
+  measurement only has to be locally accurate, not decode-grade. The
+  per-burst estimate is then accumulated with a first-order exponential loop
+  filter (`AFCLoop`, the same structure as a classical AFC/PLL loop:
+  `cfo_tracked += gain * (measurement - cfo_tracked)`), so the correction
+  follows a *drifting* Doppler rather than correcting once.
+- **Wrap-glitch collision → dual-edge placement with quality weighting.**
+  Measuring at both ends of the swept bandwidth means the glitch (which sits
+  at one fixed sample position per symbol) can corrupt at most one edge at a
+  time. Each edge's measured rate is checked against the rate the decoded
+  symbol predicts at that position; a large mismatch (from a corrupted
+  window, or an occasional wrong decode) downweights that edge automatically
+  via `dual_edge_cfo_estimate`'s quality weighting, rather than needing
+  hard-coded knowledge of which symbols are risky. Confirmed directly, not
+  just argued: `tests/test_afc.py::test_dual_edge_estimate_exact_given_correct_symbol_noiseless[100--200.0]`
+  is a case where the start-edge window does straddle that symbol's glitch
+  (mismatch ≈1.06) and the combined estimate is still accurate to within 2 Hz
+  because the end edge is clean and dominates the weighted average.
+
+**Result** (`12_dual_edge_afc.png`, 40-seed average): tracking a 0-3000 Hz
+Doppler drift over 200 bursts at SF7 (static half-bin tolerance ≈488 Hz), the
+dual-edge AFC loop holds 85-100% decode accuracy throughout, while a receiver
+that acquires once and never updates collapses to 0% once the drift moves
+past its original lock point (~burst 40). This is the chapter's central
+figure and should be presented as such — it is the clearest demonstration in
+the whole project of a receiver "correcting itself after a set of bursts to
+get right on the center frequency again," in the terms the idea was
+originally proposed in.
+
+**Two real limitations, discovered rather than assumed, and worth their own
+subsection:**
+- *Cold-start pull-in range.* A first decode against an offset beyond
+  `fft_correlation_demod`'s own half-bin capture range is wrong, which feeds
+  a garbage measurement back into the loop and it diverges (verified: a
+  naive cold start against 1000 Hz at SF7 ran to tens of kHz within 50
+  bursts). The fix used here is the standard AFC/PLL fix — a one-time coarse
+  acquisition (`sync.py::joint_cfo_symbol_search`, already built for Chapter
+  4.5) before the cheap loop takes over.
+- *Steady-state ramp lag.* A plain proportional (first-order) loop has a
+  textbook steady-state lag tracking a ramp, `≈ drift_rate / gain` (a
+  control-theory type-1 system's velocity error) — not just noise jitter.
+  Push the drift rate too far relative to the gain and bin size and this
+  systematic lag alone can exceed the tolerance
+  (`tests/test_afc.py::test_tracking_survives_a_drift_that_exceeds_the_static_capture_range`'s
+  docstring works a specific case that fails this way at a faster drift
+  rate). A proportional-integral ("type-2") loop filter would remove this
+  lag entirely and is the natural next refinement — **not implemented here**,
+  a legitimate item for this dissertation's own future-work section, or a
+  follow-up chapter if time permits building and validating it.
 
 ## Chapter 6 — Discussion
 
 - Direct synthesis: trajectory curvature alone gives a real but modest CFO
   tolerance edge (Ch. 4.2); the largest practical Doppler-tolerance gain
-  found in this work came from receiver architecture (the joint CFO+symbol
-  search, Ch. 4.5), which does not strictly require a nonlinear trajectory —
-  but nonlinearity is what makes rate-based sensing (Ch. 4.6, Ch. 5) possible
-  at all, since a linear chirp's rate carries no positional information.
-  Candidate thesis statement: nonlinear trajectories do not win on raw
-  Doppler tolerance alone, they open a distinct *class* of receiver technique
-  (rate-based sensing) unavailable to standard linear LoRa.
+  found in this work came from receiver architecture, in two forms — the
+  joint CFO+symbol search (Ch. 4.5, one-shot, expensive, unbounded range)
+  and the dual-edge AFC loop (Ch. 5, cheap, tracks drift, needs the joint
+  search once to acquire). Neither strictly requires a nonlinear
+  trajectory to exist as a technique, but nonlinearity is what makes
+  rate-based sensing (Ch. 4.6, Ch. 5) possible at all, since a linear
+  chirp's rate carries no positional information. Candidate thesis
+  statement: nonlinear trajectories do not win on raw Doppler tolerance
+  alone, they open a distinct *class* of receiver technique (rate-based
+  sensing, and the cheap tracking loop it enables) unavailable to standard
+  linear LoRa.
+- Ch. 5 in particular is the strongest direct answer to the dissertation's
+  original motivating scenario (LoRa-over-LEO, Ch. 1): a continuously
+  drifting Doppler is exactly the case a one-shot correction cannot handle
+  and a tracking loop can, and `12_dual_edge_afc.png` demonstrates that
+  gap directly rather than by argument.
 - Limitations: SF7-only parameter space; simulation-only (no RF/hardware
   validation); no legacy-LoRa-receiver interoperability story for a
-  nonlinear-trajectory PHY.
+  nonlinear-trajectory PHY; the AFC loop is first-order only (Ch. 5's
+  steady-state ramp lag is a known, quantified, unaddressed limitation).
 
 ## Chapter 7 — Conclusion & Future Work
 
-- Summarize RQ1-RQ4 findings against their validation status.
-- Future work: implement and validate Chapter 5's proposed mechanism;
-  extend beyond SF7; hardware/SDR validation; interoperability strategy.
+- Summarize RQ1-RQ4 findings against their validation status (all four now
+  **[VALIDATED]**).
+- Future work: a proportional-integral ("type-2") AFC loop to remove Ch. 5's
+  steady-state ramp lag; extend beyond SF7; hardware/SDR validation;
+  interoperability strategy for a nonlinear-trajectory PHY.
 
 ---
 
@@ -201,6 +252,8 @@ failure modes measured in Chapter 4.6:
 | Wideband Doppler (full M-ary) | `nlfsc_lora/simulate.py` | `tests/test_simulate.py` | `08_lora_ser_vs_doppler_scale.png` |
 | CFO estimation/correction | `nlfsc_lora/sync.py` | `tests/test_sync.py` | `09_lora_cfo_correction.png` |
 | Local rate-of-change decoding | `nlfsc_lora/local_rate.py` | `tests/test_local_rate.py` | `10_local_rate_estimator.png` |
+| SNR-independence of trajectory shape | `nlfsc_lora/receiver.py` | `tests/test_receiver.py` | `11_hfm_vs_quadratic_ser.png` |
+| Dual-edge AFC (Ch. 5) | `nlfsc_lora/afc.py` | `tests/test_afc.py` | `12_dual_edge_afc.png` |
 | Experiment driver | `examples/run_experiments.py` | — | all of `examples/output/*.png` |
 
 Regenerate all figures with `python examples/run_experiments.py`

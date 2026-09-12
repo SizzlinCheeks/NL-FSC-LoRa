@@ -20,6 +20,8 @@ g(t/T). Produces PNGs under examples/output/:
                                     single-symbol local-chirp-rate decoder
   11_hfm_vs_quadratic_ser.png    - SER vs SNR, linear vs quadratic vs hyperbolic (HFM),
                                     high-statistics waterfall using fft_correlation_demod
+  12_dual_edge_afc.png           - dual-edge rate sensing driving a multi-burst AFC loop
+                                    that tracks a drifting Doppler, vs a static correction
 
 Run with: python examples/run_experiments.py
 """
@@ -31,6 +33,7 @@ from functools import partial
 import matplotlib.pyplot as plt
 import numpy as np
 
+from nlfsc_lora.afc import run_afc_sequence
 from nlfsc_lora.chirp import ChirpConfig, base_frequency, symbol_waveform
 from nlfsc_lora.doppler import doppler_scale_response
 from nlfsc_lora.local_rate import local_rate_demod, local_rate_ser_vs_snr
@@ -341,6 +344,65 @@ def plot_hfm_vs_quadratic_ser():
     plt.close(fig)
 
 
+def plot_dual_edge_afc():
+    """Does measuring rate-of-change at both ends of the swept bandwidth, tracked
+    across a sequence of bursts, actually help a receiver "lock back onto center
+    frequency" under a drifting Doppler (nlfsc_lora/afc.py)? A single burst's
+    residual CFO is measured from two edge windows instead of local_rate.py's one
+    center window -- the wrap glitch can corrupt at most one edge at a fixed
+    position, so quality-weighting lets a clean edge outvote a corrupted one
+    (tests/test_afc.py checks this directly for a symbol whose glitch lands in the
+    start-edge window). That measurement feeds a first-order AFC loop, not a
+    one-shot correction, because the point is following *drift* (e.g. a
+    LoRa-over-LEO-satellite pass), not a single static offset.
+
+    Left panel: one representative run's tracked CFO vs the true (ramping) CFO.
+    Right panel: P(correct decode) vs burst index, averaged over many seeds, with
+    vs without the tracking loop -- both start from the same one-time acquisition
+    (sync.py's joint_cfo_symbol_search; a cold start beyond the decoder's own
+    half-bin capture range fails outright without it, see afc.py's module
+    docstring and tests/test_afc.py::test_cold_start_beyond_capture_range_needs_acquisition),
+    but only the tracked receiver keeps up as the drift continues.
+    """
+    bw = BANDWIDTH
+    g, dg = TRAJECTORIES["hyperbolic"]
+    cfg = ChirpConfig(sf=SF, bandwidth=bw, sample_rate=OVERSAMPLING * bw, g=g, f_center=hyperbolic_center_freq(bw))
+    n_bursts = 200
+    max_cfo = 3000.0  # far past the ~488Hz half-bin static tolerance at SF7
+    true_cfo = np.linspace(0, max_cfo, n_bursts)
+    n_seeds = 40
+
+    rng0 = np.random.default_rng(0)
+    true_symbols_example = rng0.integers(0, cfg.M, n_bursts)
+    _decoded, tracked_example, _residual = run_afc_sequence(cfg, dg, true_symbols_example, true_cfo, snr_db=10, seed=0)
+
+    correct_tracked = np.zeros((n_seeds, n_bursts), dtype=bool)
+    correct_static = np.zeros((n_seeds, n_bursts), dtype=bool)
+    for s in range(n_seeds):
+        rng = np.random.default_rng(100 + s)
+        true_symbols = rng.integers(0, cfg.M, n_bursts)
+        dec_t, _tr, _res = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, gain=0.3, seed=s)
+        dec_s, _tr2, _res2 = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, gain=0.0, seed=s)
+        correct_tracked[s] = dec_t == true_symbols
+        correct_static[s] = dec_s == true_symbols
+
+    fig, (ax_cfo, ax_acc) = plt.subplots(1, 2, figsize=(12, 4.5))
+    ax_cfo.plot(true_cfo, label="true CFO", lw=1.5)
+    ax_cfo.plot(tracked_example, label="tracked CFO", lw=1.0, alpha=0.85)
+    ax_cfo.set(xlabel="burst index", ylabel="CFO (Hz)", title="Tracked vs true CFO (one run)")
+    ax_cfo.legend(fontsize=8)
+
+    ax_acc.plot(correct_tracked.mean(axis=0), label=f"dual-edge AFC (gain=0.3)")
+    ax_acc.plot(correct_static.mean(axis=0), label="static (acquire once, gain=0)")
+    ax_acc.set(xlabel="burst index", ylabel="P(correct decode)",
+               title=f"Decode accuracy vs burst index ({n_seeds} seeds)")
+    ax_acc.legend(fontsize=8)
+    fig.suptitle(f"Dual-edge AFC tracking a 0-{max_cfo:.0f}Hz Doppler drift over {n_bursts} bursts (SNR=10dB)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "12_dual_edge_afc.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -354,6 +416,7 @@ def main():
     plot_lora_cfo_correction()
     plot_local_rate_estimator()
     plot_hfm_vs_quadratic_ser()
+    plot_dual_edge_afc()
     print(f"Wrote figures to {OUT_DIR}")
 
 

@@ -97,6 +97,13 @@ trajectory stops being a straight line, and which don't.
   change a rate of change) and, once the symbol is known, the CFO too --
   no correlation against any reference needed at all. Real speedup, real
   and serious limitations; see `10_local_rate_estimator.png` below.
+- `nlfsc_lora/afc.py` -- puts the rate-of-change idea to a different use than
+  `local_rate.py`: rather than decoding a symbol from it, measure the
+  residual CFO at both ends of the swept bandwidth for a symbol *already*
+  decoded by `fft_correlation_demod`, and track it across a sequence of
+  bursts with a first-order AFC loop -- so the receiver keeps re-centering
+  as a Doppler shift drifts, rather than correcting once. See
+  `12_dual_edge_afc.png` below.
 
 ## Running it
 
@@ -287,6 +294,47 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   Trajectory curvature is not a free lunch, but it is not a tax on raw
   noise tolerance either -- the tradeoffs it does carry (receiver
   complexity, CFO/Doppler behavior) are the real story, not SNR.
+- **`12_dual_edge_afc.png`** -- a working answer to "can the receiver check
+  rate-of-change at each end of the bandwidth and use that to lock back onto
+  center frequency": yes, with two design choices that turned out to matter.
+  First, use it to *track* CFO across a sequence of bursts, not decode a
+  symbol from it -- `local_rate.py` tried the latter and paid for it with a
+  hard noise floor and a wrap-glitch failure band; here the symbol comes
+  from the already-robust `fft_correlation_demod`, and the two edges'
+  quality-weighted measurement only has to refine a residual CFO estimate
+  once the symbol is known. Second, measuring at *both* edges rather than
+  one center window means the fixed-position wrap glitch (which depends on
+  the symbol, so it can land anywhere) can corrupt at most one edge at a
+  time; a rate-mismatch check (measured rate vs. what the decoded symbol
+  predicts at that position) downweights a corrupted edge automatically --
+  confirmed directly for a symbol whose glitch sits inside the start-edge
+  window (`tests/test_afc.py::test_dual_edge_estimate_exact_given_correct_symbol_noiseless[100--200.0]`).
+
+  The plot's scenario is a drifting Doppler (0-3000 Hz over 200 bursts at
+  SF7, where the static half-bin tolerance is only ~488 Hz) -- the realistic
+  case for anything where Doppler is large enough to need correcting at all,
+  such as a LoRa-over-LEO-satellite pass. Averaged over 40 seeds: the
+  dual-edge AFC loop stays at 85-100% decode accuracy through the entire
+  drift, while a receiver that only corrects once (acquires, then never
+  updates) collapses to 0% by burst ~40, once the drift moves past wherever
+  it was originally acquired.
+
+  One real, discovered-not-assumed limitation, documented rather than tuned
+  away: a cold start against an offset beyond `fft_correlation_demod`'s own
+  half-bin capture range fails outright -- the first decode is wrong, which
+  feeds a garbage measurement back into the loop and it diverges rather than
+  converging (`nlfsc_lora/afc.py`'s module docstring has the numbers). The
+  fix is the standard one from AFC/PLL design: a one-time coarse acquisition
+  (`sync.py`'s `joint_cfo_symbol_search`, already built for `09`) gets the
+  loop within range, then the cheap per-burst loop takes over. A second,
+  related limitation worth knowing before relying on this: a plain
+  proportional loop has a textbook steady-state lag tracking a *ramp*
+  (`~drift_rate/gain`), not just noise jitter -- push the drift rate too far
+  relative to the loop gain and bin size and the lag alone can exceed the
+  tolerance (`tests/test_afc.py`'s docstring works the numbers for one such
+  case). This project uses a plain first-order loop; a proportional-integral
+  ("type-2") loop would remove that steady-state lag entirely and is a
+  natural next step, not yet implemented here.
 
 ## Extending it
 
