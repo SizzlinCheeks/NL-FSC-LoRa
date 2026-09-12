@@ -37,17 +37,32 @@ trajectory stops being a straight line, and which don't.
   formula, so any `g` "just works" numerically. `symbol_waveform(cfg, m)` is
   the base chirp cyclically time-shifted by `m*T/M`, exactly like LoRa's
   symbol construction -- wrap glitch and all.
-- `nlfsc_lora/receiver.py` -- two decoders:
+- `nlfsc_lora/receiver.py` -- three decoders:
   - `fft_demod`: the standard LoRa trick (dechirp, then FFT the bin index
     off in one shot). This only works because a *linear* chirp's quadratic
     phase makes `df/dt` time-shift invariant, turning a cyclic shift into a
     pure frequency shift after dechirping. It degrades badly, even at
     infinite SNR, once `g` is nonlinear (`tests/test_receiver.py` checks
-    this directly).
+    this directly) -- it is trying to read the symbol off a *frequency*,
+    which only means anything if dechirping produced a pure tone, and only
+    a linear chirp guarantees that.
   - `matched_filter_bank_demod`: correlate against all `M` reference symbols
-    and take the argmax. Works for any `g`, linear or not, at the cost of
-    `O(M)` correlations instead of one FFT -- the general fallback once the
-    cheap demodulator stops applying.
+    directly and take the argmax. Works for any `g`, linear or not, at the
+    cost of `O(N*M)` (`M` length-`N` dot products) -- the straightforward
+    fallback once the cheap demodulator stops applying.
+  - `fft_correlation_demod`: the *same decision* as `matched_filter_bank_demod`
+    (tests check exact per-trial agreement, noiseless and under noise), computed
+    a completely different way and roughly 85x faster at SF7. All `M`
+    references are cyclic shifts of one base waveform, so correlating against
+    all of them is exactly a circular cross-correlation between the received
+    signal and the base waveform -- and the correlation theorem gets the
+    *entire* cross-correlation (every possible lag) from one FFT pair
+    (`correlation = IFFT(FFT(rx) * conj(FFT(base)))`), an identity true for
+    any two signals, not something specific to chirps. This reads the symbol
+    off a correlation *lag* (a time shift), never a frequency, so it never
+    runs into the tone-purity problem `fft_demod` has -- it sidesteps that
+    question entirely rather than solving it. Not a tradeoff like the other
+    ideas explored below: same answer, `O(N log N)` instead of `O(N*M)`.
 - `nlfsc_lora/channel.py` -- AWGN, carrier frequency offset, integer timing
   offset.
 - `nlfsc_lora/metrics.py` -- autocorrelation/cross-correlation,
@@ -70,7 +85,12 @@ trajectory stops being a straight line, and which don't.
   documented *negative* result (a blind, single-symbol band-edge estimate
   is swamped by the chirp's own spectral leakage); `joint_cfo_symbol_search`
   /`joint_cfo_symbol_demod` are what actually works -- see
-  `09_lora_cfo_correction.png` below.
+  `09_lora_cfo_correction.png` below. Its inner per-candidate decode uses
+  `fft_correlation_demod`'s same correlation-theorem trick instead of a
+  brute-force `O(N*M)` search, so the whole CFO grid search is cheaper by
+  roughly the same factor at every candidate (~4x measured end to end,
+  less than `fft_correlation_demod`'s standalone ~85x because of per-call
+  FFT/Python overhead repeated at every grid point).
 - `nlfsc_lora/local_rate.py` -- a much cheaper decoder possible only for a
   nonlinear `g`: a single local instantaneous-chirp-rate measurement
   identifies the symbol (CFO-independent, since a constant CFO doesn't

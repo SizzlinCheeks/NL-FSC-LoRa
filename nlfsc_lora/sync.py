@@ -28,13 +28,19 @@ pair gives the strongest matched-filter response is a working (if more
 expensive) joint estimator -- effectively a coarse delay/Doppler ambiguity
 search restricted to the frequency axis. See examples/run_experiments.py's
 09_lora_cfo_correction.png for the resulting SER improvement.
+
+Its inner per-candidate decode uses receiver.fft_correlation_demod's same
+trick (the correlation theorem, O(N log N) via one FFT pair) instead of a
+brute-force O(N*M) correlation against all M references, so the whole grid
+search is cheaper by roughly the same ~M/log(N) factor at every one of its
+candidate CFOs -- the two speedups compose.
 """
 
 from typing import Sequence, Tuple
 
 import numpy as np
 
-from .chirp import ChirpConfig, all_symbol_waveforms
+from .chirp import ChirpConfig, base_waveform
 
 
 def spectral_band_edges(rx: np.ndarray, fs: float, energy_fraction: float = 0.05) -> Tuple[float, float]:
@@ -62,23 +68,31 @@ def correct_cfo(rx: np.ndarray, cfo_est: float, fs: float) -> np.ndarray:
 
 
 def joint_cfo_symbol_search(rx: np.ndarray, cfg: ChirpConfig, cfo_candidates: Sequence[float]) -> Tuple[int, float, float]:
-    """Try every candidate CFO correction, decode against all M references at each, and
-    keep whichever (symbol, CFO) pair gives the strongest normalized matched-filter score.
+    """Try every candidate CFO correction, decode against all M references at each (via
+    the correlation-theorem trick, not a brute-force O(M) search -- see module docstring),
+    and keep whichever (symbol, CFO) pair gives the strongest normalized matched-filter
+    score.
 
-    O(len(cfo_candidates) * M) correlations per symbol -- far more expensive than plain
-    matched_filter_bank_demod, but it is what actually recovers a symbol once CFO exceeds
-    the half-bin threshold that breaks the CFO-blind receiver (see joint_cfo_symbol_demod
-    and 09_lora_cfo_correction.png).
+    Still O(len(cfo_candidates)) full decodes -- far more expensive than a single
+    fft_correlation_demod call -- but it is what actually recovers a symbol once CFO
+    exceeds the half-bin threshold that breaks the CFO-blind receiver (see
+    joint_cfo_symbol_demod and 09_lora_cfo_correction.png).
     """
-    refs = all_symbol_waveforms(cfg)
-    norms = np.linalg.norm(refs, axis=1)
-    best_score, best_m, best_cfo = -1.0, 0, 0.0
+    n = cfg.n_samples
+    base_fft = np.fft.fft(base_waveform(cfg))
+    base_norm = np.linalg.norm(base_fft) / np.sqrt(n)  # Parseval: norm(base) in the time domain
+    rx_norm = np.linalg.norm(rx)  # CFO correction is a pure phase rotation, so this is fixed for every candidate
+    valid_lags = (np.arange(cfg.M) * n // cfg.M) % n
+
+    best_raw, best_m, best_cfo = -1.0, 0, 0.0
     for cfo in cfo_candidates:
         corrected = correct_cfo(rx, cfo, cfg.sample_rate)
-        corr = np.abs(refs.conj() @ corrected) / (norms * np.linalg.norm(corrected) + 1e-15)
-        m = int(np.argmax(corr))
-        if corr[m] > best_score:
-            best_score, best_m, best_cfo = float(corr[m]), m, float(cfo)
+        corr = np.fft.ifft(base_fft * np.conj(np.fft.fft(corrected)))
+        mag = np.abs(corr[valid_lags])
+        m = int(np.argmax(mag))
+        if mag[m] > best_raw:
+            best_raw, best_m, best_cfo = float(mag[m]), m, float(cfo)
+    best_score = best_raw / (base_norm * rx_norm + 1e-15)
     return best_m, best_cfo, best_score
 
 

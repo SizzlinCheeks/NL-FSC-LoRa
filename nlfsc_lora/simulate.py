@@ -12,12 +12,17 @@ import numpy as np
 
 from .channel import apply_cfo, apply_doppler_scale, apply_timing_offset, awgn
 from .chirp import ChirpConfig, symbol_waveform
-from .receiver import fft_demod, matched_filter_bank_demod
+from .receiver import fft_correlation_demod, fft_demod, matched_filter_bank_demod
 from .sync import joint_cfo_symbol_demod
 
 Demod = Callable[[np.ndarray, ChirpConfig], int]
 
-_DEMODS = {"fft": fft_demod, "mfbank": matched_filter_bank_demod, "cfo_search": joint_cfo_symbol_demod}
+_DEMODS = {
+    "fft": fft_demod,
+    "mfbank": matched_filter_bank_demod,
+    "fft_corr": fft_correlation_demod,
+    "cfo_search": joint_cfo_symbol_demod,
+}
 
 
 def ser_vs_snr(

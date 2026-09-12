@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
 
+from nlfsc_lora.channel import awgn
 from nlfsc_lora.chirp import ChirpConfig, symbol_waveform
-from nlfsc_lora.receiver import dechirp, fft_demod, matched_filter_bank_demod
+from nlfsc_lora.receiver import dechirp, fft_correlation_demod, fft_demod, matched_filter_bank_demod
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
 
@@ -51,3 +52,30 @@ def test_fft_demod_fails_for_properly_embedded_hyperbolic_chirp():
     cfg = ChirpConfig(sf=6, bandwidth=bw, sample_rate=4 * bw, g=g, f_center=hyperbolic_center_freq(bw))
     errors = sum(1 for m in range(cfg.M) if fft_demod(symbol_waveform(cfg, m), cfg) != m)
     assert errors > 0
+
+
+@pytest.mark.parametrize("traj", TRAJECTORIES.keys())
+def test_fft_correlation_demod_exact_noiseless(traj):
+    """Unlike fft_demod, this reads the symbol off a correlation *lag*, not a
+    dechirped frequency, so it doesn't depend on dechirping producing a pure tone --
+    should work for every trajectory, not just linear."""
+    cfg = make_cfg(traj)
+    for m in range(cfg.M):
+        tx = symbol_waveform(cfg, m)
+        assert fft_correlation_demod(tx, cfg) == m
+
+
+@pytest.mark.parametrize("traj", ["linear", "quadratic", "hyperbolic"])
+def test_fft_correlation_demod_matches_matched_filter_bank_exactly(traj):
+    """Same decision every time, not just similar accuracy -- it's the identical
+    computation (correlation against all M references), just done via the
+    correlation theorem instead of M separate dot products."""
+    bw = 1000.0
+    g, _ = TRAJECTORIES[traj]
+    f_center = hyperbolic_center_freq(bw) if traj == "hyperbolic" else 0.0
+    cfg = ChirpConfig(sf=6, bandwidth=bw, sample_rate=4 * bw, g=g, f_center=f_center)
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        m = int(rng.integers(0, cfg.M))
+        rx = awgn(symbol_waveform(cfg, m), -10.0, rng)
+        assert fft_correlation_demod(rx, cfg) == matched_filter_bank_demod(rx, cfg)
