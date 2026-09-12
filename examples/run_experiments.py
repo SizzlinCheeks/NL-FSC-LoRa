@@ -31,7 +31,7 @@ BANDWIDTH = 125e3  # a standard LoRa channel bandwidth
 OVERSAMPLING = 4
 SEED = 0
 
-SHAPES = ["linear", "quadratic", "sigmoid", "sinusoidal"]
+SHAPES = ["linear", "quadratic", "sigmoid", "sinusoidal", "exponential"]
 
 
 def cfg_for(traj: str) -> ChirpConfig:
@@ -92,14 +92,25 @@ def plot_ser_vs_snr():
 
 
 def plot_ser_vs_cfo():
-    cfo_range = np.linspace(0, BANDWIDTH / (1 << SF) * 4, 8)
+    # The decision boundary between adjacent LoRa symbols sits at half a bin
+    # (B/M / 2); average over several seeds so the transition band is a real
+    # measurement rather than one noisy draw -- a single seed at this symbol
+    # count makes trajectories look several hundred Hz apart when the gap is
+    # actually within a bin's width of noise (see the mismatch investigation
+    # in the project history for how misleading one seed can be here).
+    bin_hz = BANDWIDTH / (1 << SF)
+    cfo_range = np.linspace(0, 1.8 * bin_hz, 14)
+    seeds = [0, 1, 2]
+    n_symbols = 150
     fig, ax = plt.subplots(figsize=(7, 4))
     for traj in SHAPES:
         cfg = cfg_for(traj)
-        ser = ser_vs_cfo(cfg, cfo_range, snr_db=6, n_symbols=150, demod="mfbank", seed=SEED)
-        ax.plot(cfo_range, ser, label=traj)
-    ax.set(xlabel="CFO (Hz)", ylabel="symbol error rate", title="SER vs carrier frequency offset (MF bank, SNR=6dB)")
-    ax.legend()
+        sers = [ser_vs_cfo(cfg, cfo_range, snr_db=6, n_symbols=n_symbols, demod="mfbank", seed=s) for s in seeds]
+        ax.plot(cfo_range, np.mean(sers, axis=0), label=traj)
+    ax.axvline(bin_hz / 2, color="k", linestyle=":", linewidth=1, label="half bin (B/M/2)")
+    ax.set(xlabel="CFO (Hz)", ylabel="symbol error rate",
+           title=f"SER vs carrier frequency offset (MF bank, SNR=6dB, {len(seeds)*n_symbols} symbols/point)")
+    ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "04_ser_vs_cfo.png"), dpi=150)
     plt.close(fig)

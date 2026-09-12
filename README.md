@@ -28,8 +28,9 @@ trajectory stops being a straight line, and which don't.
 ## Layout
 
 - `nlfsc_lora/trajectories.py` -- normalized shapes `g(u)`: `linear`,
-  `quadratic`/`cubic` (`f0 + k*t**p`), `sigmoid` (slow-fast-slow), a
-  `sinusoidal`-perturbed linear sweep, and a three-segment `piecewise` shape.
+  `quadratic`/`cubic` (`f0 + k*t**p`), `sigmoid` (slow-fast-slow),
+  `exponential` (monotonically accelerating), a `sinusoidal`-perturbed
+  linear sweep, and a three-segment `piecewise` shape.
 - `nlfsc_lora/chirp.py` -- generates chirps via a phase accumulator
   (`phi[n] = phi[n-1] + 2*pi*f[n]/Fs`) rather than a closed-form phase
   formula, so any `g` "just works" numerically. `symbol_waveform(cfg, m)` is
@@ -65,8 +66,8 @@ python examples/run_experiments.py   # writes comparison plots to examples/outpu
 ```
 
 `examples/run_experiments.py` reproduces the comparison framework described
-above for `linear`, `quadratic`, `sigmoid`, and `sinusoidal` trajectories at
-SF7 / 125 kHz (a standard LoRa configuration):
+above for `linear`, `quadratic`, `sigmoid`, `sinusoidal`, and `exponential`
+trajectories at SF7 / 125 kHz (a standard LoRa configuration):
 
 - **`01_frequency_trajectories.png`** -- `f(t)` and `df/dt` per shape. Linear
   has constant chirp rate by construction; the others don't.
@@ -80,8 +81,22 @@ SF7 / 125 kHz (a standard LoRa configuration):
   with `matched_filter_bank_demod`, but the plain FFT decoder never recovers
   them at any SNR in range -- nonlinear trajectories need the general
   receiver.
-- **`04_ser_vs_cfo.png`** / **`05_ser_vs_timing_offset.png`** -- tolerance to
-  an uncompensated carrier offset and to timing error, per shape.
+- **`04_ser_vs_cfo.png`** -- SER vs. an uncompensated carrier frequency
+  offset (the same model that applies to Doppler over one symbol, since
+  Doppler barely changes within a ~ms LoRa symbol). Constant envelope makes
+  the *correlation-magnitude loss against the correct symbol* provably
+  identical across every trajectory in this file -- it reduces to
+  `integral(exp(j*2*pi*cfo*t)) dt`, which doesn't depend on `g`. What can
+  still differ is confusability with the *neighboring* symbol hypothesis,
+  averaged here over multiple seeds because a single noisy run overstates
+  the gap: `quadratic`, `sinusoidal`, and `exponential` track `linear`'s
+  threshold closely, while `sigmoid` alone shows a real, reproducible softer
+  knee (spending most of the symbol at low chirp rate near the two edges,
+  where a one-symbol cyclic shift changes frequency the least). It is a
+  modest edge, not a large one -- curving the trajectory is not, by itself,
+  a reliable way to buy Doppler tolerance.
+- **`05_ser_vs_timing_offset.png`** -- tolerance to an integer-sample timing
+  error, per shape.
 - **`06_model_mismatch.png`** -- SER as the receiver's assumed exponent `p`
   drifts away from the transmitter's true `p=2`. The transition from
   error-free to unusable happens within about 1.5% of `p` -- a concrete
