@@ -128,14 +128,17 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   the *correlation-magnitude loss against the correct symbol* provably
   identical across every trajectory in this file -- it reduces to
   `integral(exp(j*2*pi*cfo*t)) dt`, which doesn't depend on `g`. What can
-  still differ is confusability with the *neighboring* symbol hypothesis,
-  averaged here over multiple seeds because a single noisy run overstates
-  the gap: `quadratic`, `sinusoidal`, and `exponential` track `linear`'s
-  threshold closely, while `sigmoid` alone shows a real, reproducible softer
-  knee (spending most of the symbol at low chirp rate near the two edges,
-  where a one-symbol cyclic shift changes frequency the least). It is a
-  modest edge, not a large one -- curving the trajectory is not, by itself,
-  a reliable way to buy Doppler tolerance.
+  still differ is confusability with the *neighboring* symbol hypothesis.
+  Now run at 10000 symbols/point (`fft_correlation_demod`'s ~85x speedup
+  makes that cheap -- the original version of this plot used 450), the
+  gap is unambiguous: `sigmoid`'s 50%-SER threshold is ~555 Hz versus
+  ~504-510 Hz for `linear`/`quadratic`/`hyperbolic` (half a symbol bin is
+  488 Hz), spending most of the symbol at low chirp rate near the two
+  edges, where a one-symbol cyclic shift changes frequency the least. It
+  is a real, reproducible, but still modest edge (~10%, not a large one)
+  -- curving the trajectory is not, by itself, a reliable way to buy CFO
+  tolerance, and notably `hyperbolic` (HFM) is *not* the standout here --
+  see `08` below for the regime where it is.
 - **`05_ser_vs_timing_offset.png`** -- tolerance to an integer-sample timing
   error, per shape.
 - **`06_model_mismatch.png`** -- SER as the receiver's assumed exponent `p`
@@ -182,8 +185,8 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
 - **`08_lora_ser_vs_doppler_scale.png`** -- does `07`'s single-waveform
   advantage survive once HFM is actually plugged into LoRa's own decoding
   scheme (cyclic-shift symbols, dechirp by the conjugate reference,
-  `matched_filter_bank_demod`)? `fft_demod` is not an option here at all --
-  it can't decode a `hyperbolic` symbol correctly even at infinite SNR, for
+  `fft_correlation_demod`)? `fft_demod` is not an option here at all -- it
+  can't decode a `hyperbolic` symbol correctly even at infinite SNR, for
   the same reason it fails for `sigmoid`/`quadratic`/etc.
   (`tests/test_receiver.py::test_fft_demod_fails_for_properly_embedded_hyperbolic_chirp`):
   the FFT-bin trick needs `f(t+tau)-f(t)` constant in `t`, which only a
@@ -196,14 +199,20 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   bin at a far smaller `alpha` than where HFM's magnitude-preservation
   would start to matter. Below that half-bin threshold every trajectory
   decodes perfectly; not far past it, every trajectory is fully saturated
-  at 100% error. There is a real, reproducible (checked across 3 seeds x
-  100 symbols/point) window in between where `hyperbolic` and `quadratic`
-  hold on a little longer than `linear`/`sigmoid` before saturating -- but
-  it is a narrow shift in *where* the SER waterfall's cliff sits, not the
-  dramatic, essentially lossless tolerance `07` showed at the single-symbol
-  level. Bottom line: HFM's Doppler-invariance is real (`07` proves it
-  numerically), but LoRa's own M-ary shift-code granularity is the
-  bottleneck once you build a full modem out of it -- getting HFM's full
+  at 100% error. Now run at 10000 symbols/point (up from the original
+  300), the window in between is a real, precisely-measured effect: 50%-SER
+  lands at `alpha`=1.00464 for `hyperbolic` and 1.00448 for `quadratic`,
+  versus 1.00393 for `linear` and 1.00375 for `sigmoid` -- HFM and quadratic
+  measurably outlast linear/sigmoid, but it is a ~20% shift in *where* the
+  SER waterfall's cliff sits, not the dramatic, essentially lossless
+  tolerance `07` showed at the single-symbol level. Notably, `sigmoid` --
+  the standout trajectory for narrowband CFO tolerance in `04` -- is tied
+  for *worst* here: the two Doppler regimes reward opposite trajectory
+  shapes, which is why this project treats them as genuinely different
+  questions rather than one "Doppler tolerance" number. Bottom line: HFM's
+  Doppler-invariance is real (`07` proves it numerically) and does carry a
+  measurable, reproducible edge into the full modem, but LoRa's own M-ary
+  shift-code granularity caps how much of it survives -- getting HFM's full
   benefit back would need a receiver that jointly searches delay *and*
   Doppler scale, not just `M` fixed-lag symbol hypotheses.
 - **`09_lora_cfo_correction.png`** -- a receiver-side fix for `04`'s CFO

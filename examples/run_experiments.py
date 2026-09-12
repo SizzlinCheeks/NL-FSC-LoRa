@@ -112,18 +112,23 @@ def plot_ser_vs_cfo():
     # count makes trajectories look several hundred Hz apart when the gap is
     # actually within a bin's width of noise (see the mismatch investigation
     # in the project history for how misleading one seed can be here).
+    # fft_correlation_demod (exact same decision as mfbank, ~85x cheaper -- see
+    # receiver.py) affords much tighter statistics than the original 450/point.
+    f_center = hyperbolic_center_freq(BANDWIDTH)
+    doppler_shapes = ["linear", "quadratic", "sigmoid", "hyperbolic"]
     bin_hz = BANDWIDTH / (1 << SF)
-    cfo_range = np.linspace(0, 1.8 * bin_hz, 14)
-    seeds = [0, 1, 2]
-    n_symbols = 150
+    cfo_range = np.linspace(0, 1.8 * bin_hz, 19)
+    seeds = [0, 1, 2, 3, 4]
+    n_symbols = 2000
     fig, ax = plt.subplots(figsize=(7, 4))
-    for traj in SHAPES:
-        cfg = cfg_for(traj)
-        sers = [ser_vs_cfo(cfg, cfo_range, snr_db=6, n_symbols=n_symbols, demod="mfbank", seed=s) for s in seeds]
-        ax.plot(cfo_range, np.mean(sers, axis=0), label=traj)
+    for traj in doppler_shapes:
+        g, _ = TRAJECTORIES[traj]
+        cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        sers = [ser_vs_cfo(cfg, cfo_range, snr_db=6, n_symbols=n_symbols, demod="fft_corr", seed=s) for s in seeds]
+        ax.plot(cfo_range, np.mean(sers, axis=0), marker="o", ms=3, label=traj)
     ax.axvline(bin_hz / 2, color="k", linestyle=":", linewidth=1, label="half bin (B/M/2)")
     ax.set(xlabel="CFO (Hz)", ylabel="symbol error rate",
-           title=f"SER vs carrier frequency offset (MF bank, SNR=6dB, {len(seeds)*n_symbols} symbols/point)")
+           title=f"SER vs carrier frequency offset (SNR=6dB, {len(seeds)*n_symbols} symbols/point)")
     ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "04_ser_vs_cfo.png"), dpi=150)
@@ -211,24 +216,27 @@ def plot_lora_ser_vs_doppler_scale():
     every trajectory starts making errors, curvature or not -- LoRa's fine, M-ary shift
     alphabet is far more sensitive to a Doppler-induced *lag* than any single waveform's
     correlation-*magnitude* advantage can rescue by itself.
+
+    Uses fft_correlation_demod (exact same decision as mfbank, ~85x cheaper -- see
+    receiver.py) to afford much tighter statistics than the original 300/point.
     """
     f_center = hyperbolic_center_freq(BANDWIDTH)
     doppler_shapes = ["linear", "quadratic", "sigmoid", "hyperbolic"]
     n_samples = int(round((1 << SF) / BANDWIDTH * OVERSAMPLING * BANDWIDTH))
     half_bin_alpha = 1.0 + (n_samples / (1 << SF) / 2) / n_samples
     alpha_range = np.linspace(1.0, 2 * half_bin_alpha - 1.0, 21)
-    seeds = [0, 1, 2]
-    n_symbols = 100
+    seeds = [0, 1, 2, 3, 4]
+    n_symbols = 2000
 
     fig, ax = plt.subplots(figsize=(7, 4))
     for traj in doppler_shapes:
         g, _ = TRAJECTORIES[traj]
         cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
-        sers = [ser_vs_doppler_scale(cfg, alpha_range, snr_db=10, n_symbols=n_symbols, demod="mfbank", seed=s) for s in seeds]
-        ax.plot(alpha_range, np.mean(sers, axis=0), label=traj)
+        sers = [ser_vs_doppler_scale(cfg, alpha_range, snr_db=10, n_symbols=n_symbols, demod="fft_corr", seed=s) for s in seeds]
+        ax.plot(alpha_range, np.mean(sers, axis=0), marker="o", ms=3, label=traj)
     ax.axvline(half_bin_alpha, color="k", linestyle=":", linewidth=1, label="half-bin threshold")
     ax.set(xlabel="Doppler time-scale factor (alpha)", ylabel="symbol error rate",
-           title=f"LoRa-style M-ary SER vs. time-scale Doppler (MF bank, SNR=10dB, {len(seeds)*n_symbols} symbols/point)")
+           title=f"LoRa-style M-ary SER vs. time-scale Doppler (SNR=10dB, {len(seeds)*n_symbols} symbols/point)")
     ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "08_lora_ser_vs_doppler_scale.png"), dpi=150)
