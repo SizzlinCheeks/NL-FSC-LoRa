@@ -12,6 +12,8 @@ g(t/T). Produces PNGs under examples/output/:
   06_model_mismatch.png          - SER when the receiver's g doesn't match the transmitter's
   07_doppler_scale_tolerance.png - matched-filter peak vs. wideband (time-scale) Doppler,
                                     linear/quadratic/sigmoid vs. hyperbolic FM (HFM)
+  08_lora_ser_vs_doppler_scale.png - the same comparison run through full LoRa-style
+                                    M-ary cyclic-shift decoding instead of a single filter
 
 Run with: python examples/run_experiments.py
 """
@@ -25,7 +27,7 @@ import numpy as np
 from nlfsc_lora.chirp import ChirpConfig, base_frequency, symbol_waveform
 from nlfsc_lora.doppler import doppler_scale_response
 from nlfsc_lora.metrics import autocorrelation, instantaneous_chirp_rate
-from nlfsc_lora.simulate import ser_vs_cfo, ser_vs_model_mismatch, ser_vs_snr, ser_vs_timing_offset
+from nlfsc_lora.simulate import ser_vs_cfo, ser_vs_doppler_scale, ser_vs_model_mismatch, ser_vs_snr, ser_vs_timing_offset
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "output")
@@ -173,7 +175,7 @@ def plot_doppler_scale_tolerance():
     for traj in doppler_shapes:
         g, _ = TRAJECTORIES[traj]
         cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
-        peaks, lags = doppler_scale_response(cfg, alpha_range, margin=1.3)
+        peaks, lags = doppler_scale_response(cfg, alpha_range)
         ax_mag.plot(alpha_range, 20 * np.log10(peaks + 1e-12), label=traj)
         ax_lag.plot(alpha_range, lags, label=traj)
     ax_mag.set(xlabel="Doppler time-scale factor (alpha)", ylabel="matched-filter peak (dB)",
@@ -187,6 +189,43 @@ def plot_doppler_scale_tolerance():
     plt.close(fig)
 
 
+def plot_lora_ser_vs_doppler_scale():
+    """Does HFM's ambiguity-function-level Doppler-scale advantage (07) survive when it's
+    actually plugged into LoRa's cyclic-shift M-ary decoding, not just a single matched
+    filter? Uses matched_filter_bank_demod throughout -- fft_demod already can't decode a
+    hyperbolic-trajectory symbol at all, Doppler or not (see
+    tests/test_receiver.py::test_fft_demod_fails_for_properly_embedded_hyperbolic_chirp).
+
+    The half-bin timing tolerance from 04_ser_vs_cfo.png (B/M / 2) reappears here almost
+    exactly: for SF7, a Doppler scale of alpha drifts the correlation peak by roughly
+    alpha_minus_1 * n_samples samples, and once that exceeds half a symbol bin (n_samples/M/2)
+    every trajectory starts making errors, curvature or not -- LoRa's fine, M-ary shift
+    alphabet is far more sensitive to a Doppler-induced *lag* than any single waveform's
+    correlation-*magnitude* advantage can rescue by itself.
+    """
+    f_center = hyperbolic_center_freq(BANDWIDTH)
+    doppler_shapes = ["linear", "quadratic", "sigmoid", "hyperbolic"]
+    n_samples = int(round((1 << SF) / BANDWIDTH * OVERSAMPLING * BANDWIDTH))
+    half_bin_alpha = 1.0 + (n_samples / (1 << SF) / 2) / n_samples
+    alpha_range = np.linspace(1.0, 2 * half_bin_alpha - 1.0, 21)
+    seeds = [0, 1, 2]
+    n_symbols = 100
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for traj in doppler_shapes:
+        g, _ = TRAJECTORIES[traj]
+        cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        sers = [ser_vs_doppler_scale(cfg, alpha_range, snr_db=10, n_symbols=n_symbols, demod="mfbank", seed=s) for s in seeds]
+        ax.plot(alpha_range, np.mean(sers, axis=0), label=traj)
+    ax.axvline(half_bin_alpha, color="k", linestyle=":", linewidth=1, label="half-bin threshold")
+    ax.set(xlabel="Doppler time-scale factor (alpha)", ylabel="symbol error rate",
+           title=f"LoRa-style M-ary SER vs. time-scale Doppler (MF bank, SNR=10dB, {len(seeds)*n_symbols} symbols/point)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "08_lora_ser_vs_doppler_scale.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -196,6 +235,7 @@ def main():
     plot_ser_vs_timing_offset()
     plot_model_mismatch()
     plot_doppler_scale_tolerance()
+    plot_lora_ser_vs_doppler_scale()
     print(f"Wrote figures to {OUT_DIR}")
 
 

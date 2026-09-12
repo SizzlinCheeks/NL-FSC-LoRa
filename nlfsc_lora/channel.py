@@ -22,3 +22,21 @@ def apply_cfo(x: np.ndarray, cfo_hz: float, fs: float) -> np.ndarray:
 def apply_timing_offset(x: np.ndarray, offset_samples: int) -> np.ndarray:
     """Integer-sample timing error, modeled as a cyclic shift within the symbol."""
     return np.roll(x, offset_samples)
+
+
+def apply_doppler_scale(x: np.ndarray, alpha: float) -> np.ndarray:
+    """Wideband ("true") Doppler: time-scale the whole burst, r(t) = x(alpha*t),
+    instead of approximating Doppler as a constant frequency shift (apply_cfo).
+
+    x is treated as a finite-duration pulse. Once alpha*t runs past the end of x
+    (alpha > 1: a compressed, foreshortened echo), the observation is padded with
+    zeros rather than extrapolated -- the transmitter has simply stopped emitting
+    by then, so there is nothing there to interpolate into.
+    """
+    n = len(x)
+    idx = alpha * np.arange(n)
+    valid = idx <= (n - 1)
+    grid = np.arange(n)
+    out = np.zeros(n, dtype=complex)
+    out[valid] = np.interp(idx[valid], grid, x.real) + 1j * np.interp(idx[valid], grid, x.imag)
+    return out
