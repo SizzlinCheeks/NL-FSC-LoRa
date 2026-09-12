@@ -18,6 +18,8 @@ g(t/T). Produces PNGs under examples/output/:
                                     a joint CFO+symbol search receiver
   10_local_rate_estimator.png    - SER vs SNR, matched-filter bank vs. a much cheaper
                                     single-symbol local-chirp-rate decoder
+  11_hfm_vs_quadratic_ser.png    - SER vs SNR, linear vs quadratic vs hyperbolic (HFM),
+                                    high-statistics waterfall using fft_correlation_demod
 
 Run with: python examples/run_experiments.py
 """
@@ -303,6 +305,34 @@ def plot_local_rate_estimator():
     plt.close(fig)
 
 
+def plot_hfm_vs_quadratic_ser():
+    """Does HFM's SNR performance actually differ from quadratic's (or linear's), with
+    the receiver that's optimal for all of them (fft_correlation_demod -- exactly
+    equivalent to matched_filter_bank_demod, just cheap enough now to afford serious
+    statistics: 5000 symbols/point x 3 seeds = 15000 per point, vs. 03_ser_vs_snr.png's
+    150)? All three embedded on the same absolute frequency band for a fair comparison.
+    """
+    f_center = hyperbolic_center_freq(BANDWIDTH)
+    shapes = ["linear", "quadratic", "hyperbolic"]
+    snr_range = np.arange(-32, -8, 2)
+    seeds = [0, 1, 2]
+    n_symbols = 5000
+    floor = 1.0 / (2 * len(seeds) * n_symbols)  # so a measured SER of exactly 0 still shows on the log axis
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for traj in shapes:
+        g, _ = TRAJECTORIES[traj]
+        cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        sers = [ser_vs_snr(cfg, snr_range, n_symbols=n_symbols, demod="fft_corr", seed=s) for s in seeds]
+        ax.plot(snr_range, np.maximum(np.mean(sers, axis=0), floor), marker="o", ms=3, label=traj)
+    ax.set(xlabel="SNR (dB)", ylabel="symbol error rate", yscale="log",
+           title=f"SER vs SNR: linear vs quadratic vs hyperbolic ({len(seeds)*n_symbols} symbols/point)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "11_hfm_vs_quadratic_ser.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -315,6 +345,7 @@ def main():
     plot_lora_ser_vs_doppler_scale()
     plot_lora_cfo_correction()
     plot_local_rate_estimator()
+    plot_hfm_vs_quadratic_ser()
     print(f"Wrote figures to {OUT_DIR}")
 
 

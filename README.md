@@ -261,6 +261,23 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   the glitch-straddling failure (e.g. a small number of candidate windows
   at different positions with a majority vote) to be usable as one, which
   this project doesn't implement or test.
+- **`11_hfm_vs_quadratic_ser.png`** -- does trajectory shape actually change
+  SNR performance, with the receiver that's optimal for all of them?
+  `fft_correlation_demod`'s ~85x speedup (see `receiver.py` above) makes it
+  cheap enough to run 15000 symbols/point instead of `03`'s 150, so this is
+  a far more statistically powered answer than the early SNR sweep gave.
+  Result: no -- `linear`, `quadratic`, and `hyperbolic` sit on top of each
+  other across the entire waterfall (-32 to -10 dB), all embedded on the
+  same absolute frequency band for a fair comparison. This matches the
+  theory from earlier in the project: constant envelope makes the
+  correlation-magnitude physics the same for any trajectory, and with the
+  receiver that's actually optimal (full correlation, not the broken
+  FFT-bin shortcut), shape differences that showed up elsewhere in this
+  project (CFO tolerance, autocorrelation sidelobes, Doppler-scale
+  tolerance) don't translate into an SNR-performance difference at all.
+  Trajectory curvature is not a free lunch, but it is not a tax on raw
+  noise tolerance either -- the tradeoffs it does carry (receiver
+  complexity, CFO/Doppler behavior) are the real story, not SNR.
 
 ## Extending it
 
