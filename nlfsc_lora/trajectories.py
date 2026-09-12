@@ -63,6 +63,23 @@ def dsinusoidal_perturbed(u, alpha=0.1):
     return 1.0 + alpha * 2 * np.pi * np.cos(2 * np.pi * u)
 
 
+def exponential(u, a=3.0):
+    """Monotonically accelerating sweep: g(u) = (exp(a*u) - 1) / (exp(a) - 1).
+
+    Unlike quadratic/cubic (power(p>1)), curvature is controlled by a single
+    rate constant `a` rather than a polynomial degree; a -> 0 approaches the
+    linear trajectory, larger a concentrates more of the bandwidth sweep into
+    the final fraction of the symbol.
+    """
+    u = np.asarray(u, dtype=float)
+    return (np.exp(a * u) - 1.0) / (np.exp(a) - 1.0)
+
+
+def dexponential(u, a=3.0):
+    u = np.asarray(u, dtype=float)
+    return a * np.exp(a * u) / (np.exp(a) - 1.0)
+
+
 def piecewise_slow_fast_slow(u, u1=0.2, u2=0.8, edge_frac=0.2):
     """Explicit three-segment trajectory: slow / linear / slow, each segment linear in u."""
     u = np.asarray(u, dtype=float)
@@ -89,6 +106,7 @@ TRAJECTORIES = {
     "cubic": (partial(power, p=3.0), partial(dpower, p=3.0)),
     "sigmoid": (sigmoid, dsigmoid),
     "sinusoidal": (sinusoidal_perturbed, dsinusoidal_perturbed),
+    "exponential": (exponential, dexponential),
     "piecewise": (piecewise_slow_fast_slow, None),
 }
 
