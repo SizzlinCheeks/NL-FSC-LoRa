@@ -14,6 +14,8 @@ g(t/T). Produces PNGs under examples/output/:
                                     linear/quadratic/sigmoid vs. hyperbolic FM (HFM)
   08_lora_ser_vs_doppler_scale.png - the same comparison run through full LoRa-style
                                     M-ary cyclic-shift decoding instead of a single filter
+  09_lora_cfo_correction.png     - SER vs CFO, CFO-blind matched-filter-bank decoding vs.
+                                    a joint CFO+symbol search receiver
 
 Run with: python examples/run_experiments.py
 """
@@ -226,6 +228,34 @@ def plot_lora_ser_vs_doppler_scale():
     plt.close(fig)
 
 
+def plot_lora_cfo_correction():
+    """A blind, single-symbol CFO estimate from the received spectrum's band edges
+    (nlfsc_lora.sync.estimate_cfo) turned out to be a documented negative result --
+    its bias from the chirp's own spectral leakage (hundreds of Hz) swamps CFO values
+    on the order of a symbol bin. What does work: searching a grid of candidate CFO
+    corrections and keeping whichever (CFO, symbol) pair gives the strongest
+    matched-filter response (nlfsc_lora.sync.joint_cfo_symbol_demod, "cfo_search" in
+    simulate._DEMODS) -- far more expensive per symbol, but it recovers symbols well
+    past the half-bin CFO threshold that saturates the CFO-blind receiver in
+    04_ser_vs_cfo.png.
+    """
+    cfg = cfg_for("linear")
+    cfo_range = np.linspace(0, 1500, 13)
+    seeds = [0, 1]
+    n_symbols = 80
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for demod, label in [("mfbank", "CFO-blind (matched_filter_bank_demod)"), ("cfo_search", "joint CFO+symbol search")]:
+        sers = [ser_vs_cfo(cfg, cfo_range, snr_db=6, n_symbols=n_symbols, demod=demod, seed=s) for s in seeds]
+        ax.plot(cfo_range, np.mean(sers, axis=0), label=label)
+    ax.set(xlabel="CFO (Hz)", ylabel="symbol error rate",
+           title=f"LoRa SER vs CFO: blind vs. corrected receiver (SNR=6dB, {len(seeds)*n_symbols} symbols/point)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "09_lora_cfo_correction.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -236,6 +266,7 @@ def main():
     plot_model_mismatch()
     plot_doppler_scale_tolerance()
     plot_lora_ser_vs_doppler_scale()
+    plot_lora_cfo_correction()
     print(f"Wrote figures to {OUT_DIR}")
 
 

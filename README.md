@@ -66,6 +66,11 @@ trajectory stops being a straight line, and which don't.
   for; see the `04_ser_vs_cfo.png` vs `07_doppler_scale_tolerance.png`
   writeups below for why they give different answers about "curved chirps
   and Doppler."
+- `nlfsc_lora/sync.py` -- CFO estimation/correction. `estimate_cfo` is a
+  documented *negative* result (a blind, single-symbol band-edge estimate
+  is swamped by the chirp's own spectral leakage); `joint_cfo_symbol_search`
+  /`joint_cfo_symbol_demod` are what actually works -- see
+  `09_lora_cfo_correction.png` below.
 
 ## Running it
 
@@ -175,6 +180,28 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   bottleneck once you build a full modem out of it -- getting HFM's full
   benefit back would need a receiver that jointly searches delay *and*
   Doppler scale, not just `M` fixed-lag symbol hypotheses.
+- **`09_lora_cfo_correction.png`** -- a receiver-side fix for `04`'s CFO
+  cliff, tried two ways. The first idea -- estimate CFO blindly from a
+  single received symbol by finding the "top and bottom of the occupied
+  bandwidth" -- has a real mathematical basis (cyclic-shifting a symbol
+  can't change which frequencies are present, only when they occur, so
+  `|FFT(symbol)|` is identical for all `M` symbols; see
+  `test_chirp.py`/`sync.py`'s module docstring) but does not work in
+  practice: a rectangular-windowed chirp's own truncation leaks ~1-2% of
+  its energy outside the nominal band, asymmetrically enough to bias a
+  band-edge or spectral-centroid estimate by several hundred Hz -- more
+  than the CFO values (~100s of Hz) this project cares about, and it gets
+  worse, not better, once noise is added (`nlfsc_lora/sync.py`'s
+  `estimate_cfo`, `tests/test_sync.py` pins down exactly how biased it is).
+  What does work: `joint_cfo_symbol_search` tries a grid of candidate CFO
+  corrections, decodes against all `M` references at each, and keeps
+  whichever (CFO, symbol) pair correlates strongest -- effectively a coarse
+  frequency-axis ambiguity search using the receiver's own reference bank
+  instead of blind spectral inspection. It is ~50x more expensive per
+  symbol than `matched_filter_bank_demod`, but the plot shows why that can
+  be worth it: it holds 0% SER across the entire CFO sweep tested (out to
+  1500 Hz, 3x past where the CFO-blind receiver is already fully
+  saturated), at the same SNR.
 
 ## Extending it
 
