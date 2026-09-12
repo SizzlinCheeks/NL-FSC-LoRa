@@ -29,8 +29,9 @@ trajectory stops being a straight line, and which don't.
 
 - `nlfsc_lora/trajectories.py` -- normalized shapes `g(u)`: `linear`,
   `quadratic`/`cubic` (`f0 + k*t**p`), `sigmoid` (slow-fast-slow),
-  `exponential` (monotonically accelerating), a `sinusoidal`-perturbed
-  linear sweep, and a three-segment `piecewise` shape.
+  `exponential` (monotonically accelerating), `hyperbolic` (linear-period
+  FM / HFM, the bio-sonar chirp law -- see `doppler.py` below), a
+  `sinusoidal`-perturbed linear sweep, and a three-segment `piecewise` shape.
 - `nlfsc_lora/chirp.py` -- generates chirps via a phase accumulator
   (`phi[n] = phi[n-1] + 2*pi*f[n]/Fs`) rather than a closed-form phase
   formula, so any `g` "just works" numerically. `symbol_waveform(cfg, m)` is
@@ -56,6 +57,12 @@ trajectory stops being a straight line, and which don't.
 - `nlfsc_lora/simulate.py` -- the actual experiment: hold bandwidth, symbol
   duration, sample rate and channel fixed, vary only `g`, and measure SER vs
   SNR / CFO / timing offset / transmitter-receiver trajectory mismatch.
+- `nlfsc_lora/doppler.py` -- the *other* Doppler model: wideband time-scaling,
+  `r(t) = s(alpha*t)`, as opposed to `channel.apply_cfo`'s constant-shift
+  approximation. This is the regime hyperbolic FM (HFM) is actually designed
+  for; see the `04_ser_vs_cfo.png` vs `07_doppler_scale_tolerance.png`
+  writeups below for why they give different answers about "curved chirps
+  and Doppler."
 
 ## Running it
 
@@ -103,6 +110,41 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   demonstration of section 9's point that the receiver's trajectory has to
   match the transmitter's precisely, because the mismatch phase error
   `Delta_phi(t)` accumulates over the whole symbol.
+- **`07_doppler_scale_tolerance.png`** -- the *wideband* Doppler test:
+  instead of a constant frequency shift, the transmitted symbol is
+  literally time-scaled (`r(t) = s(alpha*t)`, `alpha` in `[0.9, 1.1]`) and
+  matched-filtered against the original, unscaled reference -- the
+  ambiguity-function-style test that hyperbolic FM's Doppler-invariance
+  claim is actually about. `linear`, `quadratic`, `sigmoid`, and
+  `hyperbolic` are all embedded on the *same* absolute frequency band here
+  (via `hyperbolic_center_freq`), which matters because scale-Doppler
+  sensitivity depends on the absolute frequencies swept, not just the
+  bandwidth, and because HFM's law (`1/f(t)` linear in `t`) is only
+  well-posed away from 0 Hz. Result: all four trajectories shift their
+  correlation peak in time by almost the same amount (left/right panel,
+  "peak lag") -- that part is generic to any single-lobed chirp -- but
+  `hyperbolic` holds its peak *magnitude* within about 1 dB across the
+  whole +-10% sweep, while `linear` and `sigmoid` lose more than 10 dB at
+  the edges and `quadratic` sits in between. This is the real, specific
+  effect the design writeup was gesturing at ("absorbs target velocity
+  scaling factors into a predictable time shift"): HFM's `1/f(t)`-linear
+  construction makes a time-scaled copy of itself nearly coincide with a
+  *time-shifted* copy of itself, so an unscaled reference still recognizes
+  it; a linear or sigmoid chirp's time-scaled copy is a genuinely different
+  waveform (different chirp rate), so the same reference partially
+  decorrelates against it.
+
+  This is a different question from `04_ser_vs_cfo.png`, and they have
+  different answers on purpose. LoRa's actual RF Doppler is essentially all
+  bulk carrier-frequency shift (target velocities are negligible next to
+  the speed of light at a sub-GHz carrier), which is exactly the regime
+  where `04` showed curvature buys little. The time-scaling regime this
+  plot tests matters when the envelope's own time-bandwidth product is
+  large enough, or `alpha` deviates from 1 enough (high-speed sonar,
+  wideband radar, bat echolocation), for the *within-symbol* envelope
+  distortion to be non-negligible -- not really a concern for LoRa's
+  bandwidth/symbol-duration/carrier combination, but a real and separate
+  effect that HFM specifically exploits, reproduced numerically here.
 
 ## Extending it
 

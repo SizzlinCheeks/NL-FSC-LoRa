@@ -80,6 +80,33 @@ def dexponential(u, a=3.0):
     return a * np.exp(a * u) / (np.exp(a) - 1.0)
 
 
+def hyperbolic(u, q=1.0 / 3.0):
+    """Hyperbolic / linear-period FM (HFM), the bio-sonar / bat-call chirp law.
+
+    Defined by making the instantaneous *period* 1/f(t) linear in t (instead
+    of f(t) itself, as in a linear chirp). q = f_low/f_high sets how many
+    octaves the sweep spans (q=1/3 spans log2(3)=1.58 octaves) and must be
+    strictly between 0 and 1 -- unlike every other shape here, HFM is only
+    defined for a band that does not cross zero Hz, since 1/f(t) is singular
+    at f=0. Use hyperbolic_center_freq() to place ChirpConfig.f_center so the
+    swept band [f_center-B/2, f_center+B/2] actually has this ratio q.
+    """
+    u = np.asarray(u, dtype=float)
+    d = 1.0 - u * (1.0 - q)
+    return (1.0 / d - 1.0) / (1.0 / q - 1.0)
+
+
+def dhyperbolic(u, q=1.0 / 3.0):
+    u = np.asarray(u, dtype=float)
+    d = 1.0 - u * (1.0 - q)
+    return q / d**2
+
+
+def hyperbolic_center_freq(bandwidth, q=1.0 / 3.0):
+    """f_center placing a bandwidth-B sweep so f_low/f_high = q (both positive)."""
+    return bandwidth / 2.0 * (1.0 + q) / (1.0 - q)
+
+
 def piecewise_slow_fast_slow(u, u1=0.2, u2=0.8, edge_frac=0.2):
     """Explicit three-segment trajectory: slow / linear / slow, each segment linear in u."""
     u = np.asarray(u, dtype=float)
@@ -107,6 +134,7 @@ TRAJECTORIES = {
     "sigmoid": (sigmoid, dsigmoid),
     "sinusoidal": (sinusoidal_perturbed, dsinusoidal_perturbed),
     "exponential": (exponential, dexponential),
+    "hyperbolic": (hyperbolic, dhyperbolic),
     "piecewise": (piecewise_slow_fast_slow, None),
 }
 

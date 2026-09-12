@@ -50,7 +50,7 @@ def base_frequency(cfg: ChirpConfig) -> np.ndarray:
     return cfg.f_center - cfg.bandwidth / 2.0 + cfg.bandwidth * cfg.g(u)
 
 
-def _phase_accumulator(f: np.ndarray, fs: float) -> np.ndarray:
+def phase_accumulator(f: np.ndarray, fs: float) -> np.ndarray:
     """Integrate instantaneous frequency into phase: phi[n] = phi[n-1] + 2*pi*f[n]/fs."""
     dphi = 2 * np.pi * f / fs
     phi = np.cumsum(dphi)
@@ -59,7 +59,7 @@ def _phase_accumulator(f: np.ndarray, fs: float) -> np.ndarray:
 
 def base_waveform(cfg: ChirpConfig) -> np.ndarray:
     """Complex baseband samples of the base up-chirp, x[n] = exp(j*phi[n])."""
-    phi = _phase_accumulator(base_frequency(cfg), cfg.sample_rate)
+    phi = phase_accumulator(base_frequency(cfg), cfg.sample_rate)
     return np.exp(1j * phi)
 
 
