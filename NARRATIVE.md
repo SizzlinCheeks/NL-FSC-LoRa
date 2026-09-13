@@ -169,17 +169,43 @@ the same symbol (33), decoded via `fft_demod` for linear vs. hyperbolic:
 
 ![Dechirped instantaneous frequency and the resulting FFT for symbol 33, linear vs. hyperbolic](pictures/15_dechirp_linear_vs_hyperbolic.png)
 
-Top row, linear: the dechirped frequency (left) is flat — a step at the
-symbol's cyclic-shift wrap point, but constant on either side — so its FFT
-(right) is one sharp spike sitting right at bin 33, and `fft_demod` reads
-the symbol straight off it. Bottom row, hyperbolic, same symbol: the
-dechirped frequency (left) keeps curving even after dechirping, never
-settling into a tone, so its FFT (right) smears across many bins instead of
-concentrating in one — and `fft_demod`'s `argmax` confidently returns the
-*wrong* symbol (17, not 33). Not "less accurate" — wrong, on a noiseless
-signal, which is exactly the failure
+A few things worth being explicit about, since this figure packs in more
+than it first looks like:
+
+**The left-hand panels are the frequency *after* dechirping, not the raw
+transmitted chirp.** The raw linear chirp does sweep, exactly like Chapter
+1's plot shows — dechirping is precisely the operation that cancels that
+sweep. So "flat" here isn't a failure to plot the sweep; it *is* the effect
+being demonstrated: multiplying by the reference's conjugate turns a moving
+frequency into a (nearly) constant one, which is the entire reason a single
+FFT can read off a bin index for linear chirps. Concretely, top row: the
+dechirped frequency sits at one constant value, steps to a *second* constant
+value at the wrap point (differing by exactly the swept bandwidth `B`,
+125 kHz here), and stays there. Two flat pieces, not one — but each piece by
+itself is still a tone, which is why the FFT (right) still lands one sharp
+spike at bin 33 rather than two separate ones.
+
+**Bottom row, hyperbolic: the post-wrap curve descends because hyperbolic's
+own chirp *rate* is increasing over time** (visible in Chapter 1's
+right-hand `df/dt` panel — hyperbolic's rate climbs fastest near the end of
+the sweep). After the wrap, the dechirped signal is comparing a late,
+steep part of the trajectory against an early, shallow part, and that gap
+widens as time goes on — hence the downward curve, verified here against
+the exact closed-form `f(t+τ)-f(t)`, not just the noisier numerical
+derivative. Either way, the frequency never settles into a single value, so
+the FFT (right) smears across many bins instead of concentrating in one —
+and `fft_demod`'s `argmax` confidently returns the *wrong* symbol (17, not
+33). Not "less accurate" — wrong, on a noiseless signal, which is exactly
+the failure
 `tests/test_receiver.py::test_fft_demod_fails_for_properly_embedded_hyperbolic_chirp`
 confirms directly rather than just arguing for it.
+
+**Why the FFT panels run to 512, not 128:** `SF=7` gives `M=128` possible
+*symbols*, but each symbol is sampled at `N=512` points (4x oversampling —
+a standard receiver design choice this project keeps, not something
+specific to nonlinear trajectories). The FFT operates on those 512
+time-domain samples, so it has 512 bins; only 128 of them (the thin gray
+lines) are actual valid symbol positions the decoder ever looks at.
 
 ---
 

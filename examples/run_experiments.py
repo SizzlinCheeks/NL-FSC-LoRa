@@ -203,25 +203,33 @@ def plot_dechirp_linear_vs_hyperbolic():
         g, _ = TRAJECTORIES[traj]
         f_center = hyperbolic_center_freq(BANDWIDTH) if traj == "hyperbolic" else 0.0
         cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        n = cfg.n_samples
         rx = symbol_waveform(cfg, m_true)  # noiseless: isolates the dechirp/FFT mechanism itself
         d = dechirp(rx, cfg)
 
         f_inst = np.diff(np.unwrap(np.angle(d))) * cfg.sample_rate / (2 * np.pi)
         t = np.arange(len(f_inst)) / cfg.sample_rate * 1e3
+        wrap_t = t[(n - int(round(m_true * n / cfg.M))) % n]
         axes[row, 0].plot(t, f_inst / 1e3)
-        axes[row, 0].set(xlabel="t (ms)", ylabel="f (kHz)",
-                          title=f"{traj}: dechirped instantaneous frequency (symbol {m_true})")
+        axes[row, 0].axvline(wrap_t, color="k", linestyle="--", linewidth=1, alpha=0.5, label="cyclic-shift wrap point")
+        axes[row, 0].set(xlabel="t (ms)", ylabel="f (kHz)")
+        axes[row, 0].set_title(f"{traj}: instantaneous frequency AFTER dechirping (symbol {m_true})", fontsize=10)
+        axes[row, 0].legend(fontsize=8)
 
         spec = np.fft.fft(d)
         decoded = fft_demod(rx, cfg)
+        valid_lags = (np.arange(cfg.M) * n // cfg.M) % n
         axes[row, 1].plot(np.abs(spec))
+        for lag in valid_lags:
+            axes[row, 1].axvline(lag, color="gray", linewidth=0.4, alpha=0.25, zorder=0)
         axes[row, 1].axvline(m_true, color="k", linestyle="--", linewidth=1, label=f"true symbol = {m_true}")
         correct = "correct" if decoded == m_true else "WRONG"
-        axes[row, 1].set(xlabel="FFT bin k", ylabel="|spec[k]|")
+        axes[row, 1].set(xlabel=f"FFT bin k  (N={n} bins; gray lines = the M={cfg.M} valid symbol positions)",
+                          ylabel="|spec[k]|")
         axes[row, 1].set_title(f"{traj}: FFT of dechirped signal (decoded m={decoded}, {correct})", fontsize=10)
         axes[row, 1].legend(fontsize=8)
 
-    fig.suptitle("Dechirping symbol 33: linear collapses to a tone (one clean FFT peak); hyperbolic doesn't")
+    fig.suptitle("Dechirping symbol 33: linear collapses to a (piecewise-constant) tone; hyperbolic doesn't")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "15_dechirp_linear_vs_hyperbolic.png"), dpi=150)
     plt.close(fig)

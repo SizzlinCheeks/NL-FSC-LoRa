@@ -131,11 +131,16 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   trajectory's end folds back to its start is marked directly.
 - **`15_dechirp_linear_vs_hyperbolic.png`** -- the same symbol (33),
   dechirped, linear vs. hyperbolic. Linear's dechirped instantaneous
-  frequency is flat (a tone, aside from the cyclic-shift wrap step), so its
-  FFT is one clean spike at bin 33 and `fft_demod` reads the symbol
-  straight off it. Hyperbolic's dechirped frequency keeps curving, never
-  settling into a tone, so its FFT smears and `fft_demod` confidently
-  decodes the wrong symbol (17) on a noiseless signal.
+  frequency is piecewise-constant (two flat levels, one full bandwidth `B`
+  apart, stepping at the cyclic-shift wrap point) so its FFT is one clean
+  spike at bin 33 and `fft_demod` reads the symbol straight off it.
+  Hyperbolic's dechirped frequency never settles into a constant at all --
+  it keeps curving even after the wrap, because hyperbolic's own chirp
+  *rate* increases over time (see `01_frequency_trajectories.png`) -- so its
+  FFT smears and `fft_demod` confidently decodes the wrong symbol (17) on a
+  noiseless signal. The FFT panels' gray gridlines mark the `M=128` valid
+  symbol positions among the `N=512` total bins (`SF=7` symbols, 4x
+  oversampled).
 - **`13_fft_correlation_demo.png`** -- `fft_correlation_demod` laid open on
   one received symbol (hyperbolic, symbol 33, 10 dB SNR): `|S[k]|` and
   `|R[k]|`, the two FFT magnitudes; what conjugating `R[k]` actually changes
