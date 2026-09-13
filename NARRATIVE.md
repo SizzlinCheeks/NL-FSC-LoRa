@@ -164,8 +164,22 @@ nonlinear chirp → dechirp → frequency still changes → not a tone
 ```
 
 This is probably the single most important idea in the whole project: it
-is *why* everything from here on is necessary. `tests/test_receiver.py::test_fft_demod_fails_for_properly_embedded_hyperbolic_chirp`
-confirms this failure directly rather than just arguing for it.
+is *why* everything from here on is necessary. Here it is concretely, on
+the same symbol (33), decoded via `fft_demod` for linear vs. hyperbolic:
+
+![Dechirped instantaneous frequency and the resulting FFT for symbol 33, linear vs. hyperbolic](pictures/15_dechirp_linear_vs_hyperbolic.png)
+
+Top row, linear: the dechirped frequency (left) is flat — a step at the
+symbol's cyclic-shift wrap point, but constant on either side — so its FFT
+(right) is one sharp spike sitting right at bin 33, and `fft_demod` reads
+the symbol straight off it. Bottom row, hyperbolic, same symbol: the
+dechirped frequency (left) keeps curving even after dechirping, never
+settling into a tone, so its FFT (right) smears across many bins instead of
+concentrating in one — and `fft_demod`'s `argmax` confidently returns the
+*wrong* symbol (17, not 33). Not "less accurate" — wrong, on a noiseless
+signal, which is exactly the failure
+`tests/test_receiver.py::test_fft_demod_fails_for_properly_embedded_hyperbolic_chirp`
+confirms directly rather than just arguing for it.
 
 ---
 

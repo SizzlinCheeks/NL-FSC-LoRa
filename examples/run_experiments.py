@@ -29,6 +29,9 @@ g(t/T). Produces PNGs under examples/output/:
                                     all that broadband energy concentrates into one peak
   14_ser_vs_snr_all_shapes.png   - SER vs SNR for every trajectory shape at once, all
                                     decoded with fft_correlation_demod for a fair comparison
+  15_dechirp_linear_vs_hyperbolic.png - symbol 33, linear vs hyperbolic: dechirped
+                                    instantaneous frequency and the resulting FFT, showing
+                                    linear collapse to one clean tone/peak and hyperbolic not
 
 Run with: python examples/run_experiments.py
 """
@@ -46,7 +49,7 @@ from nlfsc_lora.chirp import ChirpConfig, base_frequency, base_waveform, symbol_
 from nlfsc_lora.doppler import doppler_scale_response
 from nlfsc_lora.local_rate import local_rate_demod, local_rate_ser_vs_snr
 from nlfsc_lora.metrics import autocorrelation, instantaneous_chirp_rate
-from nlfsc_lora.receiver import matched_filter_bank_demod
+from nlfsc_lora.receiver import dechirp, fft_demod, matched_filter_bank_demod
 from nlfsc_lora.simulate import ser_vs_cfo, ser_vs_doppler_scale, ser_vs_model_mismatch, ser_vs_snr, ser_vs_timing_offset
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
@@ -153,6 +156,45 @@ def plot_fft_correlation_demo():
     fig.suptitle("The two FFTs are broadband and uninformative alone; the IFFT of their product concentrates into one peak")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "13_fft_correlation_demo.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_dechirp_linear_vs_hyperbolic():
+    """The concrete before/after Chapter 2 of NARRATIVE.md walks through in
+    words: dechirp the same symbol (33, noiseless) for linear vs hyperbolic
+    and show what's actually different. For linear, dechirping produces a
+    flat instantaneous frequency (a tone), so its FFT is one sharp spike at
+    bin 33 and fft_demod reads the symbol straight off it. For hyperbolic,
+    the dechirped frequency keeps changing, so the FFT smears across many
+    bins and fft_demod's argmax lands on the wrong symbol entirely.
+    """
+    m_true = 33
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    for row, traj in enumerate(["linear", "hyperbolic"]):
+        g, _ = TRAJECTORIES[traj]
+        f_center = hyperbolic_center_freq(BANDWIDTH) if traj == "hyperbolic" else 0.0
+        cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        rx = symbol_waveform(cfg, m_true)  # noiseless: isolates the dechirp/FFT mechanism itself
+        d = dechirp(rx, cfg)
+
+        f_inst = np.diff(np.unwrap(np.angle(d))) * cfg.sample_rate / (2 * np.pi)
+        t = np.arange(len(f_inst)) / cfg.sample_rate * 1e3
+        axes[row, 0].plot(t, f_inst / 1e3)
+        axes[row, 0].set(xlabel="t (ms)", ylabel="f (kHz)",
+                          title=f"{traj}: dechirped instantaneous frequency (symbol {m_true})")
+
+        spec = np.fft.fft(d)
+        decoded = fft_demod(rx, cfg)
+        axes[row, 1].plot(np.abs(spec))
+        axes[row, 1].axvline(m_true, color="k", linestyle="--", linewidth=1, label=f"true symbol = {m_true}")
+        correct = "correct" if decoded == m_true else "WRONG"
+        axes[row, 1].set(xlabel="FFT bin k", ylabel="|spec[k]|")
+        axes[row, 1].set_title(f"{traj}: FFT of dechirped signal (decoded m={decoded}, {correct})", fontsize=10)
+        axes[row, 1].legend(fontsize=8)
+
+    fig.suptitle("Dechirping symbol 33: linear collapses to a tone (one clean FFT peak); hyperbolic doesn't")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "15_dechirp_linear_vs_hyperbolic.png"), dpi=150)
     plt.close(fig)
 
 
@@ -517,6 +559,7 @@ def main():
     plot_local_rate_estimator()
     plot_hfm_vs_quadratic_ser()
     plot_ser_vs_snr_all_shapes()
+    plot_dechirp_linear_vs_hyperbolic()
     plot_dual_edge_afc()
     print(f"Wrote figures to {OUT_DIR}")
 
