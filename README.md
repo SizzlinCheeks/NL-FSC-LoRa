@@ -124,6 +124,12 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
 - **`02_autocorrelation.png`** -- sidelobe structure differs sharply by
   shape; `sigmoid`'s slow edges cost it several dB of peak-to-sidelobe ratio
   versus `linear`.
+- **`13_fft_correlation_demo.png`** -- `fft_correlation_demod` laid open on
+  one received symbol (hyperbolic, symbol 33, 10 dB SNR): `|S[k]|` and
+  `|R[k]|`, the two FFT magnitudes, then `|IDFT{S[k]*conj(R[k])}[l]|`, the
+  correlation recovered from their product -- a single sharp peak at the
+  true shift, versus the noise floor and the two broad, individually
+  uninformative spectra it was built from.
 - **`03_ser_vs_snr.png`** -- the central result. `linear` decodes correctly
   with either demodulator, with the FFT decoder trailing the matched-filter
   bank by several dB (the cost of the cheap trick even when it applies). The

@@ -22,6 +22,10 @@ g(t/T). Produces PNGs under examples/output/:
                                     high-statistics waterfall using fft_correlation_demod
   12_dual_edge_afc.png           - dual-edge rate sensing driving a multi-burst AFC loop
                                     that tracks a drifting Doppler, vs a static correction
+  13_fft_correlation_demo.png    - fft_correlation_demod laid open: |S[k]| and |R[k]|
+                                    (broadband, uninformative on their own), then
+                                    |IDFT{S[k]*conj(R[k])}[l]|, where all that broadband
+                                    energy concentrates into one sharp correlation peak
 
 Run with: python examples/run_experiments.py
 """
@@ -34,7 +38,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from nlfsc_lora.afc import run_afc_sequence
-from nlfsc_lora.chirp import ChirpConfig, base_frequency, symbol_waveform
+from nlfsc_lora.channel import awgn
+from nlfsc_lora.chirp import ChirpConfig, base_frequency, base_waveform, symbol_waveform
 from nlfsc_lora.doppler import doppler_scale_response
 from nlfsc_lora.local_rate import local_rate_demod, local_rate_ser_vs_snr
 from nlfsc_lora.metrics import autocorrelation, instantaneous_chirp_rate
@@ -88,6 +93,54 @@ def plot_autocorrelation():
     ax.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "02_autocorrelation.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_fft_correlation_demo():
+    """Lay open fft_correlation_demod's three steps for one received symbol:
+    FFT of the reference, FFT of the received signal, and the correlation
+    C[l] = IDFT{S[k]*conj(R[k])} recovered from them -- the same computation
+    as nlfsc_lora/receiver.py::fft_correlation_demod, just with the
+    intermediate arrays plotted instead of only the final argmax.
+    """
+    traj = "hyperbolic"
+    m_true = 33
+    snr_db = 10.0
+    g, _ = TRAJECTORIES[traj]
+    cfg = ChirpConfig(
+        sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g,
+        f_center=hyperbolic_center_freq(BANDWIDTH),
+    )
+    n = cfg.n_samples
+    rng = np.random.default_rng(SEED)
+
+    base = base_waveform(cfg)
+    rx = awgn(symbol_waveform(cfg, m_true), snr_db, rng)
+
+    S = np.fft.fft(base)
+    R = np.fft.fft(rx)
+    corr = np.fft.ifft(S * np.conj(R))
+    valid_lags = (np.arange(cfg.M) * n // cfg.M) % n
+    m_hat = int(np.argmax(np.abs(corr[valid_lags])))
+    tau_true = m_true * n // cfg.M
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    axes[0].plot(np.abs(S))
+    axes[0].set(xlabel="k", ylabel="|S[k]|", title="FFT of the reference waveform")
+
+    axes[1].plot(np.abs(R), color="tab:orange")
+    axes[1].set(xlabel="k", ylabel="|R[k]|", title=f"FFT of the received signal (symbol {m_true}, {snr_db:.0f} dB SNR)")
+
+    axes[2].plot(np.abs(corr), color="tab:green", label="|C[l]| = |IDFT{S[k]*conj(R[k])}[l]|")
+    axes[2].axvline(tau_true, color="k", linestyle="--", linewidth=1, label=f"true shift  = {tau_true}")
+    axes[2].scatter(valid_lags, np.abs(corr[valid_lags]), s=10, color="tab:red", zorder=3, label="the M valid symbol positions")
+    axes[2].set(xlabel="lag l", ylabel="|C[l]|", title=f"Correlation after IFFT  (decoded m={m_hat}, true m={m_true})")
+    axes[2].legend(fontsize=8, loc="upper right")
+
+    fig.suptitle("The two FFTs are broadband and uninformative alone; the IFFT of their product concentrates into one peak")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "13_fft_correlation_demo.png"), dpi=150)
     plt.close(fig)
 
 
@@ -411,6 +464,7 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
     plot_autocorrelation()
+    plot_fft_correlation_demo()
     plot_ser_vs_snr()
     plot_ser_vs_cfo()
     plot_ser_vs_timing_offset()

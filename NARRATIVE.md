@@ -234,6 +234,23 @@ corr = np.fft.ifft(base_fft * np.conj(np.fft.fft(rx)))   # C[l] for every l, at 
 m_hat = int(np.argmax(np.abs(corr[valid_lags])))          # look up the M known shifts
 ```
 
+Here is that computation on one actual received symbol (hyperbolic trajectory,
+symbol 33, 10 dB SNR): `|S[k]|` and `|R[k]|`, the two FFT magnitudes the code
+above starts from, and `|C[l]|`, the correlation the IFFT recovers from
+their product.
+
+![FFT of the reference waveform, FFT of the received signal, and the resulting correlation after IFFT, with a clear peak at the true symbol shift](pictures/13_fft_correlation_demo.png)
+
+Neither of the first two panels tells you the symbol by itself — both
+spectra are spread across many frequency bins, an unavoidable property of
+a chirp, since it sweeps through a wide range of frequencies over the
+symbol. The third panel is the payoff: multiplying those two spectra
+together and taking one IFFT concentrates all of that spread-out energy
+into a single sharp spike, sitting exactly at the true shift (dashed line).
+The red dots are the `M` positions `τ_m` actually correspond to real
+symbols — `argmax` over just those `M` points is the whole decoder, and it
+lands on the correct one here.
+
 The mental model for the difference between Chapter 3 and this chapter:
 
 ```
