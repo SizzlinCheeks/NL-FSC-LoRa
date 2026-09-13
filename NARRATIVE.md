@@ -249,7 +249,17 @@ m_hat = int(np.argmax(np.abs(corr[valid_lags])))          # look up the M known 
 ```
 
 Here is that computation on one actual received symbol (hyperbolic trajectory,
-symbol 33, 10 dB SNR): `|S[k]|` and `|R[k]|`, the two FFT magnitudes the code
+symbol 33, 10 dB SNR). First, the actual waveform being decoded — the
+hyperbolic trajectory cyclically shifted to symbol 33, same style as the
+Chapter 1 plot but for this one specific symbol instead of every shape's
+`m=0` base:
+
+![Hyperbolic trajectory shifted to symbol 33, showing the cyclic-shift wrap point](pictures/16_hyperbolic_symbol33_waveform.png)
+
+The curve is the same hyperbolic shape from Chapter 1, just started at a
+different point and wrapped around — the dashed line marks where the
+trajectory's end folds back to its beginning, the "wrap point" Chapter 6
+comes back to. Now, `|S[k]|` and `|R[k]|`, the two FFT magnitudes the code
 above starts from; what conjugating `R[k]` actually changes; and `|C[l]|`,
 the correlation the IFFT recovers from their product.
 

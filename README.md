@@ -124,6 +124,11 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
 - **`02_autocorrelation.png`** -- sidelobe structure differs sharply by
   shape; `sigmoid`'s slow edges cost it several dB of peak-to-sidelobe ratio
   versus `linear`.
+- **`16_hyperbolic_symbol33_waveform.png`** -- what one actual symbol's
+  cyclic shift looks like: the hyperbolic trajectory shifted to `m=33`,
+  same style as `01_frequency_trajectories.png` but for a single shape and
+  symbol instead of every shape's `m=0` base. The wrap point where the
+  trajectory's end folds back to its start is marked directly.
 - **`15_dechirp_linear_vs_hyperbolic.png`** -- the same symbol (33),
   dechirped, linear vs. hyperbolic. Linear's dechirped instantaneous
   frequency is flat (a tone, aside from the cyclic-shift wrap step), so its

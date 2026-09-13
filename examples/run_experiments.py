@@ -32,6 +32,8 @@ g(t/T). Produces PNGs under examples/output/:
   15_dechirp_linear_vs_hyperbolic.png - symbol 33, linear vs hyperbolic: dechirped
                                     instantaneous frequency and the resulting FFT, showing
                                     linear collapse to one clean tone/peak and hyperbolic not
+  16_hyperbolic_symbol33_waveform.png - what the hyperbolic trajectory's symbol-33
+                                    cyclic shift actually looks like, f(t) vs t
 
 Run with: python examples/run_experiments.py
 """
@@ -84,6 +86,33 @@ def plot_trajectories():
     ax_f.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "01_frequency_trajectories.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_hyperbolic_symbol_waveform(m: int = 33):
+    """What one actual symbol's cyclic shift looks like, same style as
+    01_frequency_trajectories.png (f(t) vs t) but for a single trajectory
+    (hyperbolic) at a single symbol (m=33 by default) instead of every
+    shape's m=0 base. Symbol m is the base trajectory cyclically time-shifted
+    by m*T/M (chirp.py::symbol_waveform); plotting base_frequency itself
+    rolled the same way shows that shift exactly, including the wrap
+    discontinuity where the trajectory's end folds back to its start.
+    """
+    cfg = cfg_for("hyperbolic")
+    n = cfg.n_samples
+    shift = int(round(m * n / cfg.M)) % n
+    f_shifted = np.roll(base_frequency(cfg), -shift)
+    t = np.arange(n) / cfg.sample_rate * 1e3
+    wrap_t = t[(n - shift) % n]
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(t, (f_shifted - cfg.f_center) / 1e3)
+    ax.axvline(wrap_t, color="k", linestyle="--", linewidth=1, label="cyclic-shift wrap point")
+    ax.set(xlabel="t (ms)", ylabel="f(t) - f_center (kHz)",
+           title=f"Hyperbolic trajectory, symbol m={m}: the actual waveform this project decodes")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "16_hyperbolic_symbol33_waveform.png"), dpi=150)
     plt.close(fig)
 
 
@@ -560,6 +589,7 @@ def main():
     plot_hfm_vs_quadratic_ser()
     plot_ser_vs_snr_all_shapes()
     plot_dechirp_linear_vs_hyperbolic()
+    plot_hyperbolic_symbol_waveform()
     plot_dual_edge_afc()
     print(f"Wrote figures to {OUT_DIR}")
 
