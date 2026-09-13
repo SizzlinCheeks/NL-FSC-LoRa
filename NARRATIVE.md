@@ -305,9 +305,23 @@ two waveforms actually line up, and mostly cancel elsewhere. The fourth
 panel is the payoff: multiplying those two spectra together and taking one
 IFFT concentrates all of that spread-out energy into a single sharp spike,
 sitting exactly at the true shift (dashed line). The red dots are the `M`
-positions `τ_m` actually correspond to real symbols — `argmax` over just
-those `M` points is the whole decoder, and it lands on the correct one
+positions `τ_m` that actually correspond to real symbols — `argmax` over
+just those `M` points is the whole decoder, and it lands on the correct one
 here.
+
+**One thing worth being precise about, since it's easy to misread:** the
+fourth panel's x-axis is `lag l`, a *sample-domain shift* (0 to `N-1` = 511
+here), not the symbol index directly. The peak sits at lag 132, not at
+"33" — that's not a discrepancy, it's Chapter 1's `τ_m = round(m·N/M)`
+formula showing up again: symbol 33's cyclic shift is `round(33·512/128) =
+132` samples, so the peak *is* symbol 33, expressed in samples instead of
+symbol index. To go from a peak lag back to a symbol, divide by `N/M = 4`:
+`132 / 4 = 33`. Concretely, decoding never actually reads the lag off the
+full curve — `fft_correlation_demod` only ever looks at `corr[valid_lags]`,
+an array already indexed `0..M-1` one entry per symbol, and `argmax` on
+*that* array returns the symbol index directly, no conversion needed. The
+annotation on the plot spells out the same arithmetic for anyone reading
+the lag axis by eye.
 
 The mental model for the difference between Chapter 3 and this chapter:
 

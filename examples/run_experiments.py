@@ -176,10 +176,18 @@ def plot_fft_correlation_demo():
     axes[2].set(xlabel="k", ylabel="amplitude", title="Conjugating R[k]: Re{·} unchanged, Im{·} flips sign")
     axes[2].legend(fontsize=8, loc="upper right")
 
+    n_over_m = n // cfg.M
     axes[3].plot(np.abs(corr), color="tab:green", label="|C[l]| = |IDFT{S[k]*conj(R[k])}[l]|")
-    axes[3].axvline(tau_true, color="k", linestyle="--", linewidth=1, label=f"true shift  = {tau_true}")
+    axes[3].axvline(tau_true, color="k", linestyle="--", linewidth=1)
     axes[3].scatter(valid_lags, np.abs(corr[valid_lags]), s=10, color="tab:red", zorder=3, label="the M valid symbol positions")
-    axes[3].set(xlabel="lag l", ylabel="|C[l]|", title=f"Correlation after IFFT  (decoded m={m_hat}, true m={m_true})")
+    peak_y = np.abs(corr[tau_true])
+    axes[3].annotate(
+        f"dashed line = peak, at lag {tau_true}\n= symbol {tau_true}/{n_over_m} = {m_hat}",
+        xy=(tau_true, peak_y), xytext=(tau_true + 110, peak_y * 0.55),
+        fontsize=8, ha="left", arrowprops=dict(arrowstyle="->", color="black", lw=0.8),
+    )
+    axes[3].set(xlabel=f"lag l (samples 0..{n-1}); symbol m = l / (N/M) = l / {n_over_m}", ylabel="|C[l]|",
+                title=f"Correlation after IFFT  (decoded m={m_hat}, true m={m_true})")
     axes[3].legend(fontsize=8, loc="upper right")
 
     fig.suptitle("The two FFTs are broadband and uninformative alone; the IFFT of their product concentrates into one peak")

@@ -149,6 +149,10 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   then `|IDFT{S[k]*conj(R[k])}[l]|`, the correlation recovered from their
   product -- a single sharp peak at the true shift, versus the noise floor
   and the two broad, individually uninformative spectra it was built from.
+  The peak's x-position is a *lag* (132 samples), not the symbol index
+  directly -- the annotation on the plot spells out the conversion
+  (`132 / (N/M) = 132/4 = symbol 33`), matching `chirp.py`'s
+  `τ_m = round(m*N/M)`.
 - **`14_ser_vs_snr_all_shapes.png`** -- every trajectory shape's SER-vs-SNR
   waterfall on one plot, all decoded with `fft_correlation_demod` so the
   comparison is fair. The curves sit almost on top of each other --
