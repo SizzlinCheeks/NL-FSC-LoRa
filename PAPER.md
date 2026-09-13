@@ -71,11 +71,14 @@ $$
 
 This is a **pure tone** — a single spike in the FFT, the thing a
 frequency-domain peak-finder can read a bin index off of — exactly when its
-instantaneous frequency doesn't depend on $t$:
+instantaneous frequency doesn't depend on $t$. That instantaneous frequency
+is
 
 $$
-\frac{d}{dt}\Big[\phi(t+\tau_m)-\phi(t)\Big] = f(t+\tau_m) - f(t) \overset{?}{=} \text{constant in } t
+\frac{d}{dt}\Big[\phi(t+\tau_m)-\phi(t)\Big] = f(t+\tau_m) - f(t)
 $$
+
+so the question is: for which $f$ is this constant in $t$?
 
 **Claim.** $f(t+\tau)-f(t)$ is constant in $t$ for every shift $\tau$ if and
 only if $f$ is affine, $f(t) = f_0 + kt$.

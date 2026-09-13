@@ -311,7 +311,7 @@ trajectory's shape, because $|s(t)|=1$ always. What *can* differ between
 trajectories is confusability with the neighboring symbol — a smaller,
 shape-dependent effect:
 
-![Symbol error rate vs. CFO for different trajectories](examples/output/04_ser_vs_cfo.png)
+![Symbol error rate vs. CFO for different trajectories](pictures/04_ser_vs_cfo.png)
 
 ### 5.2 Wideband Doppler: time scaling
 
@@ -351,7 +351,7 @@ matched-filter response degrades under scaling rather than merely shifting.
 HFM loses about 1 dB of peak magnitude across a $\pm10\%$ scale sweep,
 versus more than 10 dB for a linear chirp:
 
-![Matched-filter peak magnitude vs. Doppler time-scale for HFM vs. linear chirp](examples/output/07_doppler_scale_tolerance.png)
+![Matched-filter peak magnitude vs. Doppler time-scale for HFM vs. linear chirp](pictures/07_doppler_scale_tolerance.png)
 
 The exactness above is a property of the idealized, unbounded-domain
 waveform; a real burst has a finite window, so the shifted copy's support
@@ -368,7 +368,7 @@ trajectory, sets in before HFM's magnitude-preservation advantage gets a
 chance to matter. The single-waveform result is real; it is not, by
 itself, the whole story:
 
-![Full LoRa symbol error rate vs. Doppler scale for HFM vs. linear chirp](examples/output/08_lora_ser_vs_doppler_scale.png)
+![Full LoRa symbol error rate vs. Doppler scale for HFM vs. linear chirp](pictures/08_lora_ser_vs_doppler_scale.png)
 
 ---
 
@@ -461,7 +461,7 @@ over 200 bursts stays at 85-100% decode accuracy the whole way, while a
 receiver that corrects once and never updates collapses to 0% once the
 drift moves past where it was originally acquired.
 
-![Decode accuracy under a drifting CFO: dual-edge tracking vs. one-time static correction](examples/output/12_dual_edge_afc.png)
+![Decode accuracy under a drifting CFO: dual-edge tracking vs. one-time static correction](pictures/12_dual_edge_afc.png)
 
 ---
 
