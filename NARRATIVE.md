@@ -52,7 +52,7 @@ frequency trajectory so it can follow an arbitrary shape instead of a
 straight line:
 
 $$
-f(t) = f_0 + B\,g(t/T)
+f(t) = f_0 + B \cdot g(t/T)
 $$
 
 $g$ is the thing being changed. $g(u)=u$ reproduces the linear ramp — plain
@@ -65,7 +65,7 @@ Frequency integrates to phase, and phase exponentiates to the actual
 transmitted waveform:
 
 $$
-\phi(t) = 2\pi\int_0^t f(\tau)\,d\tau, \qquad s(t) = e^{j\phi(t)}
+\phi(t) = 2\pi\int_0^t f(\tau)d\tau, \qquad s(t) = e^{j\phi(t)}
 $$
 
 **How does a symbol get encoded?** Each symbol is represented by a
@@ -95,14 +95,14 @@ The conventional LoRa receiver multiplies the received chirp by the
 conjugate of a reference chirp — "dechirping":
 
 $$
-d(t) = r(t)\,\overline{s(t)}
+d(t) = r(t) \cdot \overline{s(t)}
 $$
 
 Complex multiplication adds phases, so multiplying by a conjugate
 *subtracts* the reference's phase:
 
 $$
-e^{j\phi_r(t)}\,e^{-j\phi_s(t)} \;=\; e^{\,j[\phi_r(t)-\phi_s(t)]}
+e^{j\phi_r(t)} \cdot e^{-j\phi_s(t)} = e^{j[\phi_r(t)-\phi_s(t)]}
 $$
 
 **What does that signal look like after dechirping?** That's the question
@@ -169,7 +169,7 @@ the received waveform?** That's correlation — a way of measuring how well
 two signals line up.
 
 $$
-\mathrm{score}_m \;=\; \sum_{n=0}^{N-1} \overline{s_m[n]}\; r[n], \qquad \hat m = \arg\max_m |\mathrm{score}_m|
+\mathrm{score}_m = \sum_{n=0}^{N-1} \overline{s_m[n]} \cdot r[n], \qquad \hat m = \arg\max_m |\mathrm{score}_m|
 $$
 
 Because every candidate is a cyclic shift of the same reference waveform
@@ -200,7 +200,7 @@ function for *every* possible shift $l$, not just the $M$ ones that
 correspond to real symbols:
 
 $$
-C[l] \;=\; \sum_{n=0}^{N-1} s[n]\,\overline{r[(n-l)\bmod N]}
+C[l] = \sum_{n=0}^{N-1} s[n] \cdot \overline{r[(n-l)\bmod N]}
 $$
 
 Instead of asking for one score at a time, this asks for the correlation at
@@ -209,7 +209,7 @@ actually be computed that way cheaply — and it can, via the correlation
 theorem. Let $S[k]$ and $R[k]$ be the ordinary DFTs of $s[n]$ and $r[n]$:
 
 $$
-C[l] \;=\; \mathrm{IDFT}\big\{\,S[k]\,\overline{R[k]}\,\big\}[l]
+C[l] = \mathrm{IDFT}\big(S[k] \cdot \overline{R[k]}\big)[l]
 $$
 
 *(Full derivation and proof of this theorem, plus the reindexing argument
@@ -280,7 +280,7 @@ found real evidence for both being true.
 ### 5.1 Narrowband Doppler: a frequency offset
 
 $$
-r(t) = s(t)\,e^{j2\pi f_\Delta t}
+r(t) = s(t) \cdot e^{j2\pi f_\Delta t}
 $$
 
 This shifts the *entire* frequency trajectory by a constant amount — every
@@ -309,7 +309,9 @@ correlation magnitude a given $f_\Delta$ costs — that loss reduces to
 $\left|\int_0^T e^{j2\pi f_\Delta t}dt\right|$, independent of the
 trajectory's shape, because $|s(t)|=1$ always. What *can* differ between
 trajectories is confusability with the neighboring symbol — a smaller,
-shape-dependent effect (`examples/output/04_ser_vs_cfo.png`).
+shape-dependent effect:
+
+![Symbol error rate vs. CFO for different trajectories](examples/output/04_ser_vs_cfo.png)
 
 ### 5.2 Wideband Doppler: time scaling
 
@@ -339,16 +341,17 @@ $c = -\dfrac{2\pi f_{\text{low}}}{\beta}\ln\alpha$.
 
 *Proof.* The identity $1-\beta\alpha t = \alpha\big(1-\beta(t-\Delta)\big)$ holds exactly for that $\Delta$ (expand the right side and collect terms). Apply $-\frac{2\pi f_{\text{low}}}{\beta}\ln(\cdot)$ to both sides of the identity and the claim follows directly. $\blacksquare$
 
-So $s(\alpha t) = e^{jc}\,s(t-\Delta)$ — exactly, not approximately, for the
+So $s(\alpha t) = e^{jc} \cdot s(t-\Delta)$ — exactly, not approximately, for the
 idealized continuous-time waveform. A matched filter built for the
 unscaled $s$ still recognizes a Doppler-scaled copy perfectly; the scaling
 only moves *where* the peak lands, never how tall it is. A linear chirp has
 no such identity: time-scaling it changes its chirp rate outright into a
 genuinely different waveform, which is exactly why a linear chirp's
-matched-filter response degrades under scaling rather than merely shifting
-(`examples/output/07_doppler_scale_tolerance.png`: HFM loses about 1 dB of
-peak magnitude across a $\pm10\%$ scale sweep, versus more than 10 dB for a
-linear chirp).
+matched-filter response degrades under scaling rather than merely shifting.
+HFM loses about 1 dB of peak magnitude across a $\pm10\%$ scale sweep,
+versus more than 10 dB for a linear chirp:
+
+![Matched-filter peak magnitude vs. Doppler time-scale for HFM vs. linear chirp](examples/output/07_doppler_scale_tolerance.png)
 
 The exactness above is a property of the idealized, unbounded-domain
 waveform; a real burst has a finite window, so the shifted copy's support
@@ -358,12 +361,14 @@ edges. That's the real, measured, nonzero loss reported above.
 And here is the honest, load-bearing caveat of this whole chapter: **HFM
 has an important theoretical Doppler property, but that does not mean HFM
 automatically solves Doppler for the complete $M$-ary LoRa receiver.**
-Plugging HFM into LoRa's own fine-grained, cyclic-shift decoding
-(`examples/output/08_lora_ser_vs_doppler_scale.png`) shows the advantage
-only partially surviving — that decoder's sensitivity to a Doppler-induced
-*lag*, which turns out to be nearly identical across every trajectory, sets
-in before HFM's magnitude-preservation advantage gets a chance to matter.
-The single-waveform result is real; it is not, by itself, the whole story.
+Plugging HFM into LoRa's own fine-grained, cyclic-shift decoding shows the
+advantage only partially surviving — that decoder's sensitivity to a
+Doppler-induced *lag*, which turns out to be nearly identical across every
+trajectory, sets in before HFM's magnitude-preservation advantage gets a
+chance to matter. The single-waveform result is real; it is not, by
+itself, the whole story:
+
+![Full LoRa symbol error rate vs. Doppler scale for HFM vs. linear chirp](examples/output/08_lora_ser_vs_doppler_scale.png)
 
 ---
 
@@ -423,7 +428,7 @@ predicts at that position, that measurement is probably clean; if it
 doesn't, something corrupted it, and it should count for less.
 
 $$
-\widehat{\mathrm{CFO}} = \frac{w_A\,\widehat{\mathrm{CFO}}_A + w_B\,\widehat{\mathrm{CFO}}_B}{w_A+w_B}, \qquad w_i = \frac{1}{\left|\dot f_i - \dot f_{\text{exp},i}\right|/|\dot f_{\text{exp},i}| + \epsilon}
+\widehat{\mathrm{CFO}} = \frac{w_A \cdot \widehat{\mathrm{CFO}}_A + w_B \cdot \widehat{\mathrm{CFO}}_B}{w_A+w_B}, \qquad w_i = \frac{1}{\left|\dot f_i - \dot f_{\text{exp},i}\right|/|\dot f_{\text{exp},i}| + \epsilon}
 $$
 
 `tests/test_afc.py::test_dual_edge_estimate_exact_given_correct_symbol_noiseless`
@@ -451,11 +456,12 @@ instance — while a single one-time correction can't: it just keeps nudging
 itself back toward center, burst after burst, rather than committing to
 one estimate and hoping it stays valid.
 
-`examples/output/12_dual_edge_afc.png` demonstrates the payoff directly: a
-receiver tracking a 0-3000 Hz drift over 200 bursts stays at 85-100% decode
-accuracy the whole way, while a receiver that corrects once and never
-updates collapses to 0% once the drift moves past where it was originally
-acquired.
+The payoff, demonstrated directly: a receiver tracking a 0-3000 Hz drift
+over 200 bursts stays at 85-100% decode accuracy the whole way, while a
+receiver that corrects once and never updates collapses to 0% once the
+drift moves past where it was originally acquired.
+
+![Decode accuracy under a drifting CFO: dual-edge tracking vs. one-time static correction](examples/output/12_dual_edge_afc.png)
 
 ---
 

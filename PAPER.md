@@ -25,7 +25,7 @@ sitting next to it in the repository.
 | $F_s$ | sample rate (Hz) |
 | $g(u)$ | normalized trajectory shape, $u \in [0,1]$, $g(0)=0$, $g(1)=1$ |
 | $f(t)$ | instantaneous frequency |
-| $\phi(t)$ | instantaneous phase, $\phi(t) = 2\pi\int_0^t f(\tau)\,d\tau$ |
+| $\phi(t)$ | instantaneous phase, $\phi(t) = 2\pi\int_0^t f(\tau)d\tau$ |
 | $s[n]$ | the base ($m=0$) reference waveform, $s[n] = e^{j\phi(n/F_s)}$ |
 | $\tau_m$ | the cyclic sample shift encoding symbol $m$: $\tau_m = \mathrm{round}(mN/M)$ |
 | $X[k]$ | the discrete Fourier transform (DFT) of $x[n]$ |
@@ -37,7 +37,7 @@ sitting next to it in the repository.
 Every waveform in this project is generated from one formula:
 
 $$
-f(t) = f_0 + B \cdot g(t/T), \qquad \phi(t) = 2\pi\int_0^t f(\tau)\,d\tau, \qquad s(t) = e^{j\phi(t)}
+f(t) = f_0 + B \cdot g(t/T), \qquad \phi(t) = 2\pi\int_0^t f(\tau)d\tau, \qquad s(t) = e^{j\phi(t)}
 $$
 
 Standard LoRa is the special case $g(u) = u$ (a straight ramp — constant
@@ -66,7 +66,7 @@ The standard trick — dechirp, then read one FFT bin — is: multiply the
 received signal by the conjugate of the reference, and look at what's left.
 
 $$
-d(t) \;=\; s_m(t)\cdot \overline{s(t)} \;=\; e^{j\phi(t+\tau_m)}\cdot e^{-j\phi(t)} \;=\; e^{\,j[\phi(t+\tau_m)-\phi(t)]}
+d(t) = s_m(t)\cdot \overline{s(t)} = e^{j\phi(t+\tau_m)}\cdot e^{-j\phi(t)} = e^{j[\phi(t+\tau_m)-\phi(t)]}
 $$
 
 This is a **pure tone** — a single spike in the FFT, the thing a
@@ -74,7 +74,7 @@ frequency-domain peak-finder can read a bin index off of — exactly when its
 instantaneous frequency doesn't depend on $t$:
 
 $$
-\frac{d}{dt}\Big[\phi(t+\tau_m)-\phi(t)\Big] \;=\; f(t+\tau_m) - f(t) \;\overset{?}{=}\; \text{constant in } t
+\frac{d}{dt}\Big[\phi(t+\tau_m)-\phi(t)\Big] = f(t+\tau_m) - f(t) \overset{?}{=} \text{constant in } t
 $$
 
 **Claim.** $f(t+\tau)-f(t)$ is constant in $t$ for every shift $\tau$ if and
@@ -105,7 +105,7 @@ correlate the received signal against **every** candidate symbol waveform
 and keep the best match:
 
 $$
-\mathrm{score}_m \;=\; \sum_{n=0}^{N-1} \overline{s_m[n]}\; r[n] \;=\; \sum_{n=0}^{N-1} \overline{s[(n+\tau_m)\bmod N]}\; r[n], \qquad \hat m = \arg\max_m |\mathrm{score}_m|
+\mathrm{score}_m = \sum_{n=0}^{N-1} \overline{s_m[n]} \cdot r[n] = \sum_{n=0}^{N-1} \overline{s[(n+\tau_m)\bmod N]} \cdot r[n], \qquad \hat m = \arg\max_m |\mathrm{score}_m|
 $$
 
 This is correct for any $g$ — implemented as
@@ -123,7 +123,7 @@ received signal $r$, as a function of an arbitrary lag $l$ (not just the $M$
 special lags $\tau_m$):
 
 $$
-C[l] \;=\; \sum_{n=0}^{N-1} s[n]\;\overline{r[(n-l)\bmod N]}
+C[l] = \sum_{n=0}^{N-1} s[n] \cdot \overline{r[(n-l)\bmod N]}
 $$
 
 **Claim.** $|\mathrm{score}_m| = |C[\tau_m]|$ for every $m$.
@@ -131,7 +131,7 @@ $$
 *Proof.* Substitute $k = (n+\tau_m)\bmod N$ (so $n = (k-\tau_m)\bmod N$) into $\mathrm{score}_m$:
 
 $$
-\mathrm{score}_m = \sum_{k=0}^{N-1} \overline{s[k]}\;r[(k-\tau_m)\bmod N] = \overline{C[\tau_m]}
+\mathrm{score}_m = \sum_{k=0}^{N-1} \overline{s[k]} \cdot r[(k-\tau_m)\bmod N] = \overline{C[\tau_m]}
 $$
 
 which has the same magnitude as $C[\tau_m]$. $\blacksquare$
@@ -145,19 +145,19 @@ once, decoding becomes a lookup instead of a search.
 Let $S[k]$ and $R[k]$ be the DFTs of $s[n]$ and $r[n]$:
 
 $$
-S[k] = \sum_{n=0}^{N-1} s[n]\,e^{-j2\pi kn/N}, \qquad R[k] = \sum_{n=0}^{N-1} r[n]\,e^{-j2\pi kn/N}
+S[k] = \sum_{n=0}^{N-1} s[n] \cdot e^{-j2\pi kn/N}, \qquad R[k] = \sum_{n=0}^{N-1} r[n] \cdot e^{-j2\pi kn/N}
 $$
 
-**Theorem.** $C[l] = \mathrm{IDFT}\{S[k]\,\overline{R[k]}\}[l]$.
+**Theorem.** $C[l] = \mathrm{IDFT}\big(S[k] \cdot \overline{R[k]}\big)[l]$.
 
 *Proof.* Take the DFT of $C$ with respect to $l$ and substitute $m=(n-l)\bmod N$:
 
 $$
 \begin{aligned}
-\mathrm{DFT}\{C\}[k] &= \sum_{l=0}^{N-1} \left(\sum_{n=0}^{N-1} s[n]\,\overline{r[(n-l)\bmod N]}\right) e^{-j2\pi kl/N} \\
-&= \sum_{n=0}^{N-1} s[n] \sum_{m=0}^{N-1} \overline{r[m]}\; e^{-j2\pi k(n-m)/N} \\
-&= \underbrace{\left(\sum_n s[n]\,e^{-j2\pi kn/N}\right)}_{S[k]} \cdot \overline{\left(\sum_m r[m]\,e^{-j2\pi km/N}\right)} \\
-&= S[k]\,\overline{R[k]}
+\mathrm{DFT}(C)[k] &= \sum_{l=0}^{N-1} \left(\sum_{n=0}^{N-1} s[n] \cdot \overline{r[(n-l)\bmod N]}\right) e^{-j2\pi kl/N} \\
+&= \sum_{n=0}^{N-1} s[n] \sum_{m=0}^{N-1} \overline{r[m]} \cdot e^{-j2\pi k(n-m)/N} \\
+&= \underbrace{\left(\sum_n s[n] \cdot e^{-j2\pi kn/N}\right)}_{S[k]} \cdot \overline{\left(\sum_m r[m] \cdot e^{-j2\pi km/N}\right)} \\
+&= S[k] \cdot \overline{R[k]}
 \end{aligned}
 $$
 
@@ -172,7 +172,7 @@ what lets a single correlation function stand in for all of them.
 ### 4.3 The decoder
 
 $$
-\boxed{\;\hat m \;=\; \arg\max_{m} \left|\, \mathrm{IDFT}\{S[k]\,\overline{R[k]}\}[\tau_m] \,\right|\;}
+\boxed{\hat m = \arg\max_{m} \left| \mathrm{IDFT}\big(S[k] \cdot \overline{R[k]}\big)[\tau_m] \right|}
 $$
 
 Compute $S$ once per reference (cache it — it never changes), compute $R$
@@ -200,7 +200,7 @@ merely similar accuracy, the identical decision on every trial.
 
 At $SF=7$ ($N=512$, $M=128$): $NM \approx 65{,}500$ versus
 $\sim 3N\log_2 N \approx 13{,}800$ for the three transforms — matching the
-measured $\sim\!85\times$ speedup at that configuration.
+measured $\sim 85\times$ speedup at that configuration.
 
 ---
 
@@ -209,11 +209,11 @@ measured $\sim\!85\times$ speedup at that configuration.
 ### 5.1 Narrowband: a constant frequency shift
 
 $$
-r(t) = s(t)\,e^{j2\pi f_{\Delta} t}
+r(t) = s(t) \cdot e^{j2\pi f_{\Delta} t}
 $$
 
 The correct-symbol correlation magnitude loss reduces to
-$\left|\int_0^T e^{j2\pi f_\Delta t}\,dt\right|$ — independent of $g$, since
+$\left|\int_0^T e^{j2\pi f_\Delta t}dt\right|$ — independent of $g$, since
 $|s(t)|=1$ always (constant envelope). What differs between trajectories is
 confusability with the *neighboring* symbol hypothesis, which is a smaller,
 shape-dependent effect (`examples/output/04_ser_vs_cfo.png`).
@@ -242,7 +242,7 @@ $$
 *Proof.* The algebraic identity $1-\beta\alpha t = \alpha\big(1-\beta(t-\Delta)\big)$ holds exactly for $\Delta = (1-\alpha)/(\alpha\beta)$ (expand the right side: $\alpha - \alpha\beta t + \alpha\beta\Delta = \alpha - \alpha\beta t + (1-\alpha) = 1-\alpha\beta t$, which is the left side). Taking $-\frac{2\pi f_{\text{low}}}{\beta}\ln(\cdot)$ of both sides:
 
 $$
-\phi(\alpha t) = -\frac{2\pi f_{\text{low}}}{\beta}\Big[\ln\alpha + \ln\big(1-\beta(t-\Delta)\big)\Big] = -\frac{2\pi f_{\text{low}}}{\beta}\ln\alpha \;+\; \phi(t-\Delta) \qquad \blacksquare
+\phi(\alpha t) = -\frac{2\pi f_{\text{low}}}{\beta}\Big[\ln\alpha + \ln\big(1-\beta(t-\Delta)\big)\Big] = -\frac{2\pi f_{\text{low}}}{\beta}\ln\alpha + \phi(t-\Delta) \qquad \blacksquare
 $$
 
 Exponentiating, $s(\alpha t) = e^{jc}\cdot s(t-\Delta)$ — a Doppler-scaled
@@ -279,7 +279,7 @@ Over a short window of $2w{+}1$ samples centered at index $n_0$, fit the
 *unwrapped* phase to a cubic in the local sample index $k$:
 
 $$
-\angle r[n_0+k] \;\approx\; a + bk + ck^2 + dk^3, \qquad k = -w,\dots,w
+\angle r[n_0+k] \approx a + bk + ck^2 + dk^3, \qquad k = -w,\dots,w
 $$
 
 Reading off the linear and quadratic coefficients gives the local
@@ -312,7 +312,7 @@ lets a clean measurement outvote one corrupted by the cyclic-shift phase
 discontinuity, which can only ever occur at one fixed position per symbol:
 
 $$
-\widehat{\mathrm{CFO}} = \frac{w_A\,\widehat{\mathrm{CFO}}_A + w_B\,\widehat{\mathrm{CFO}}_B}{w_A+w_B}, \qquad w_i = \frac{1}{\;\left|\dot f_i - \dot f_{\text{exp},i}\right|/|\dot f_{\text{exp},i}| + \epsilon\;}
+\widehat{\mathrm{CFO}} = \frac{w_A \cdot \widehat{\mathrm{CFO}}_A + w_B \cdot \widehat{\mathrm{CFO}}_B}{w_A+w_B}, \qquad w_i = \frac{1}{\left|\dot f_i - \dot f_{\text{exp},i}\right|/|\dot f_{\text{exp},i}| + \epsilon}
 $$
 
 Implementation and the specific verified case where one edge is corrupted
