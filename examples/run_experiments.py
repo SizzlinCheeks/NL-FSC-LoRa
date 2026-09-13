@@ -22,6 +22,18 @@ g(t/T). Produces PNGs under examples/output/:
                                     high-statistics waterfall using fft_correlation_demod
   12_dual_edge_afc.png           - dual-edge rate sensing driving a multi-burst AFC loop
                                     that tracks a drifting Doppler, vs a static correction
+  13_fft_correlation_demo.png    - fft_correlation_demod laid open: |S[k]| and |R[k]|
+                                    (broadband, uninformative on their own), what
+                                    conjugating R[k] actually changes (Im{.} flips sign,
+                                    Re{.} doesn't), then |IDFT{S[k]*conj(R[k])}[l]|, where
+                                    all that broadband energy concentrates into one peak
+  14_ser_vs_snr_all_shapes.png   - SER vs SNR for every trajectory shape at once, all
+                                    decoded with fft_correlation_demod for a fair comparison
+  15_dechirp_linear_vs_hyperbolic.png - symbol 33, linear vs hyperbolic: dechirped
+                                    instantaneous frequency and the resulting FFT, showing
+                                    linear collapse to one clean tone/peak and hyperbolic not
+  16_hyperbolic_symbol33_waveform.png - what the hyperbolic trajectory's symbol-33
+                                    cyclic shift actually looks like, f(t) vs t
 
 Run with: python examples/run_experiments.py
 """
@@ -34,11 +46,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from nlfsc_lora.afc import run_afc_sequence
-from nlfsc_lora.chirp import ChirpConfig, base_frequency, symbol_waveform
+from nlfsc_lora.channel import awgn
+from nlfsc_lora.chirp import ChirpConfig, base_frequency, base_waveform, symbol_waveform
 from nlfsc_lora.doppler import doppler_scale_response
 from nlfsc_lora.local_rate import local_rate_demod, local_rate_ser_vs_snr
 from nlfsc_lora.metrics import autocorrelation, instantaneous_chirp_rate
-from nlfsc_lora.receiver import matched_filter_bank_demod
+from nlfsc_lora.receiver import dechirp, fft_demod, matched_filter_bank_demod
 from nlfsc_lora.simulate import ser_vs_cfo, ser_vs_doppler_scale, ser_vs_model_mismatch, ser_vs_snr, ser_vs_timing_offset
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
@@ -49,26 +62,57 @@ OVERSAMPLING = 4
 SEED = 0
 
 SHAPES = ["linear", "quadratic", "sigmoid", "sinusoidal", "exponential"]
+TRAJECTORY_PLOT_SHAPES = SHAPES + ["hyperbolic"]
 
 
 def cfg_for(traj: str) -> ChirpConfig:
     g, _ = TRAJECTORIES[traj]
-    return ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g)
+    f_center = hyperbolic_center_freq(BANDWIDTH) if traj == "hyperbolic" else 0.0
+    return ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
 
 
 def plot_trajectories():
+    # Plotted as f(t) - f_center so every shape (including hyperbolic, which
+    # is only well-posed away from 0 Hz) is comparable on the same axes.
     fig, (ax_f, ax_rate) = plt.subplots(1, 2, figsize=(11, 4))
-    for traj in SHAPES:
+    for traj in TRAJECTORY_PLOT_SHAPES:
         cfg = cfg_for(traj)
         f = base_frequency(cfg)
         t = np.arange(cfg.n_samples) / cfg.sample_rate * 1e3
-        ax_f.plot(t, f / 1e3, label=traj)
+        ax_f.plot(t, (f - cfg.f_center) / 1e3, label=traj)
         ax_rate.plot(t, instantaneous_chirp_rate(f, cfg.sample_rate) / 1e9, label=traj)
-    ax_f.set(xlabel="t (ms)", ylabel="f(t) (kHz)", title="Instantaneous frequency")
+    ax_f.set(xlabel="t (ms)", ylabel="f(t) - f_center (kHz)", title="Instantaneous frequency")
     ax_rate.set(xlabel="t (ms)", ylabel="df/dt (GHz/s)", title="Instantaneous chirp rate")
     ax_f.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "01_frequency_trajectories.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_hyperbolic_symbol_waveform(m: int = 33):
+    """What one actual symbol's cyclic shift looks like, same style as
+    01_frequency_trajectories.png (f(t) vs t) but for a single trajectory
+    (hyperbolic) at a single symbol (m=33 by default) instead of every
+    shape's m=0 base. Symbol m is the base trajectory cyclically time-shifted
+    by m*T/M (chirp.py::symbol_waveform); plotting base_frequency itself
+    rolled the same way shows that shift exactly, including the wrap
+    discontinuity where the trajectory's end folds back to its start.
+    """
+    cfg = cfg_for("hyperbolic")
+    n = cfg.n_samples
+    shift = int(round(m * n / cfg.M)) % n
+    f_shifted = np.roll(base_frequency(cfg), -shift)
+    t = np.arange(n) / cfg.sample_rate * 1e3
+    wrap_t = t[(n - shift) % n]
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(t, (f_shifted - cfg.f_center) / 1e3)
+    ax.axvline(wrap_t, color="k", linestyle="--", linewidth=1, label="cyclic-shift wrap point")
+    ax.set(xlabel="t (ms)", ylabel="f(t) - f_center (kHz)",
+           title=f"Hyperbolic trajectory, symbol m={m}: the actual waveform this project decodes")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "16_hyperbolic_symbol33_waveform.png"), dpi=150)
     plt.close(fig)
 
 
@@ -84,6 +128,118 @@ def plot_autocorrelation():
     ax.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "02_autocorrelation.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_fft_correlation_demo():
+    """Lay open fft_correlation_demod's three steps for one received symbol:
+    FFT of the reference, FFT of the received signal, and the correlation
+    C[l] = IDFT{S[k]*conj(R[k])} recovered from them -- the same computation
+    as nlfsc_lora/receiver.py::fft_correlation_demod, just with the
+    intermediate arrays plotted instead of only the final argmax.
+    """
+    traj = "hyperbolic"
+    m_true = 33
+    snr_db = 10.0
+    g, _ = TRAJECTORIES[traj]
+    cfg = ChirpConfig(
+        sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g,
+        f_center=hyperbolic_center_freq(BANDWIDTH),
+    )
+    n = cfg.n_samples
+    rng = np.random.default_rng(SEED)
+
+    base = base_waveform(cfg)
+    rx = awgn(symbol_waveform(cfg, m_true), snr_db, rng)
+
+    S = np.fft.fft(base)
+    R = np.fft.fft(rx)
+    corr = np.fft.ifft(S * np.conj(R))
+    valid_lags = (np.arange(cfg.M) * n // cfg.M) % n
+    m_hat = int(np.argmax(np.abs(corr[valid_lags])))
+    tau_true = m_true * n // cfg.M
+
+    fig, axes = plt.subplots(1, 4, figsize=(20, 4))
+
+    axes[0].plot(np.abs(S))
+    axes[0].set(xlabel="k", ylabel="|S[k]|", title="FFT of the reference waveform")
+
+    axes[1].plot(np.abs(R), color="tab:orange")
+    axes[1].set(xlabel="k", ylabel="|R[k]|", title=f"FFT of the received signal (symbol {m_true}, {snr_db:.0f} dB SNR)")
+
+    # |conj(R[k])| is identical to |R[k]| -- conjugation never changes magnitude.
+    # What it actually does is flip the sign of the imaginary part (equivalently,
+    # negate the phase); that's the only part of R[k] this panel needs to show.
+    axes[2].plot(np.imag(R), color="tab:orange", alpha=0.6, label="Im{R[k]}")
+    axes[2].plot(np.imag(np.conj(R)), color="tab:purple", label="Im{conj(R[k])} = -Im{R[k]}")
+    axes[2].axhline(0, color="k", linewidth=0.6)
+    axes[2].set(xlabel="k", ylabel="amplitude", title="Conjugating R[k]: Re{·} unchanged, Im{·} flips sign")
+    axes[2].legend(fontsize=8, loc="upper right")
+
+    n_over_m = n // cfg.M
+    axes[3].plot(np.abs(corr), color="tab:green", label="|C[l]| = |IDFT{S[k]*conj(R[k])}[l]|")
+    axes[3].axvline(tau_true, color="k", linestyle="--", linewidth=1)
+    axes[3].scatter(valid_lags, np.abs(corr[valid_lags]), s=10, color="tab:red", zorder=3, label="the M valid symbol positions")
+    peak_y = np.abs(corr[tau_true])
+    axes[3].annotate(
+        f"dashed line = peak, at lag {tau_true}\n= symbol {tau_true}/{n_over_m} = {m_hat}",
+        xy=(tau_true, peak_y), xytext=(tau_true + 110, peak_y * 0.55),
+        fontsize=8, ha="left", arrowprops=dict(arrowstyle="->", color="black", lw=0.8),
+    )
+    axes[3].set(xlabel=f"lag l (samples 0..{n-1}); symbol m = l / (N/M) = l / {n_over_m}", ylabel="|C[l]|",
+                title=f"Correlation after IFFT  (decoded m={m_hat}, true m={m_true})")
+    axes[3].legend(fontsize=8, loc="upper right")
+
+    fig.suptitle("The two FFTs are broadband and uninformative alone; the IFFT of their product concentrates into one peak")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "13_fft_correlation_demo.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_dechirp_linear_vs_hyperbolic():
+    """The concrete before/after Chapter 2 of NARRATIVE.md walks through in
+    words: dechirp the same symbol (33, noiseless) for linear vs hyperbolic
+    and show what's actually different. For linear, dechirping produces a
+    flat instantaneous frequency (a tone), so its FFT is one sharp spike at
+    bin 33 and fft_demod reads the symbol straight off it. For hyperbolic,
+    the dechirped frequency keeps changing, so the FFT smears across many
+    bins and fft_demod's argmax lands on the wrong symbol entirely.
+    """
+    m_true = 33
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    for row, traj in enumerate(["linear", "hyperbolic"]):
+        g, _ = TRAJECTORIES[traj]
+        f_center = hyperbolic_center_freq(BANDWIDTH) if traj == "hyperbolic" else 0.0
+        cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        n = cfg.n_samples
+        rx = symbol_waveform(cfg, m_true)  # noiseless: isolates the dechirp/FFT mechanism itself
+        d = dechirp(rx, cfg)
+
+        f_inst = np.diff(np.unwrap(np.angle(d))) * cfg.sample_rate / (2 * np.pi)
+        t = np.arange(len(f_inst)) / cfg.sample_rate * 1e3
+        wrap_t = t[(n - int(round(m_true * n / cfg.M))) % n]
+        axes[row, 0].plot(t, f_inst / 1e3)
+        axes[row, 0].axvline(wrap_t, color="k", linestyle="--", linewidth=1, alpha=0.5, label="cyclic-shift wrap point")
+        axes[row, 0].set(xlabel="t (ms)", ylabel="f (kHz)")
+        axes[row, 0].set_title(f"{traj}: instantaneous frequency AFTER dechirping (symbol {m_true})", fontsize=10)
+        axes[row, 0].legend(fontsize=8)
+
+        spec = np.fft.fft(d)
+        decoded = fft_demod(rx, cfg)
+        valid_lags = (np.arange(cfg.M) * n // cfg.M) % n
+        axes[row, 1].plot(np.abs(spec))
+        for lag in valid_lags:
+            axes[row, 1].axvline(lag, color="gray", linewidth=0.4, alpha=0.25, zorder=0)
+        axes[row, 1].axvline(m_true, color="k", linestyle="--", linewidth=1, label=f"true symbol = {m_true}")
+        correct = "correct" if decoded == m_true else "WRONG"
+        axes[row, 1].set(xlabel=f"FFT bin k  (N={n} bins; gray lines = the M={cfg.M} valid symbol positions)",
+                          ylabel="|spec[k]|")
+        axes[row, 1].set_title(f"{traj}: FFT of dechirped signal (decoded m={decoded}, {correct})", fontsize=10)
+        axes[row, 1].legend(fontsize=8)
+
+    fig.suptitle("Dechirping symbol 33: linear collapses to a (piecewise-constant) tone; hyperbolic doesn't")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "15_dechirp_linear_vs_hyperbolic.png"), dpi=150)
     plt.close(fig)
 
 
@@ -344,6 +500,36 @@ def plot_hfm_vs_quadratic_ser():
     plt.close(fig)
 
 
+def plot_ser_vs_snr_all_shapes():
+    """SER vs SNR for every trajectory shape in the project on one plot, all
+    decoded with the same receiver (fft_correlation_demod -- the only one
+    that's both fast and correct regardless of shape), so it's a fair,
+    apples-to-apples comparison rather than each shape getting whichever
+    decoder happens to work for it. All shapes embedded on the same absolute
+    frequency band, as in plot_hfm_vs_quadratic_ser above.
+    """
+    f_center = hyperbolic_center_freq(BANDWIDTH)
+    shapes = SHAPES + ["hyperbolic"]
+    snr_range = np.arange(-32, -8, 2)
+    seeds = [0, 1, 2]
+    n_symbols = 3000
+    floor = 1.0 / (2 * len(seeds) * n_symbols)  # so a measured SER of exactly 0 still shows on the log axis
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for traj in shapes:
+        g, _ = TRAJECTORIES[traj]
+        cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        sers = [ser_vs_snr(cfg, snr_range, n_symbols=n_symbols, demod="fft_corr", seed=s) for s in seeds]
+        ax.plot(snr_range, np.maximum(np.mean(sers, axis=0), floor), marker="o", ms=3, label=traj)
+    ax.set(xlabel="SNR (dB)", ylabel="symbol error rate", yscale="log",
+           title=f"SER vs SNR, every trajectory shape ({len(seeds)*n_symbols} symbols/point, fft_correlation_demod)")
+    ax.invert_xaxis()  # read left-to-right as a channel degrading over time: good SNR first, worsening after
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "14_ser_vs_snr_all_shapes.png"), dpi=150)
+    plt.close(fig)
+
+
 def plot_dual_edge_afc():
     """Does measuring rate-of-change at both ends of the swept bandwidth, tracked
     across a sequence of bursts, actually help a receiver "lock back onto center
@@ -407,6 +593,7 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
     plot_autocorrelation()
+    plot_fft_correlation_demo()
     plot_ser_vs_snr()
     plot_ser_vs_cfo()
     plot_ser_vs_timing_offset()
@@ -416,6 +603,9 @@ def main():
     plot_lora_cfo_correction()
     plot_local_rate_estimator()
     plot_hfm_vs_quadratic_ser()
+    plot_ser_vs_snr_all_shapes()
+    plot_dechirp_linear_vs_hyperbolic()
+    plot_hyperbolic_symbol_waveform()
     plot_dual_edge_afc()
     print(f"Wrote figures to {OUT_DIR}")
 

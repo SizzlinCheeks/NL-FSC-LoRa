@@ -117,11 +117,48 @@ python examples/run_experiments.py   # writes comparison plots to examples/outpu
 above for `linear`, `quadratic`, `sigmoid`, `sinusoidal`, and `exponential`
 trajectories at SF7 / 125 kHz (a standard LoRa configuration):
 
-- **`01_frequency_trajectories.png`** -- `f(t)` and `df/dt` per shape. Linear
-  has constant chirp rate by construction; the others don't.
+- **`01_frequency_trajectories.png`** -- `f(t)` and `df/dt` per shape,
+  including `hyperbolic` (plotted as a deviation from its own center
+  frequency, since HFM isn't well-posed centered at 0 Hz). Linear has
+  constant chirp rate by construction; the others don't.
 - **`02_autocorrelation.png`** -- sidelobe structure differs sharply by
   shape; `sigmoid`'s slow edges cost it several dB of peak-to-sidelobe ratio
   versus `linear`.
+- **`16_hyperbolic_symbol33_waveform.png`** -- what one actual symbol's
+  cyclic shift looks like: the hyperbolic trajectory shifted to `m=33`,
+  same style as `01_frequency_trajectories.png` but for a single shape and
+  symbol instead of every shape's `m=0` base. The wrap point where the
+  trajectory's end folds back to its start is marked directly.
+- **`15_dechirp_linear_vs_hyperbolic.png`** -- the same symbol (33),
+  dechirped, linear vs. hyperbolic. Linear's dechirped instantaneous
+  frequency is piecewise-constant (two flat levels, one full bandwidth `B`
+  apart, stepping at the cyclic-shift wrap point) so its FFT is one clean
+  spike at bin 33 and `fft_demod` reads the symbol straight off it.
+  Hyperbolic's dechirped frequency never settles into a constant at all --
+  it keeps curving even after the wrap, because hyperbolic's own chirp
+  *rate* increases over time (see `01_frequency_trajectories.png`) -- so its
+  FFT smears and `fft_demod` confidently decodes the wrong symbol (17) on a
+  noiseless signal. The FFT panels' gray gridlines mark the `M=128` valid
+  symbol positions among the `N=512` total bins (`SF=7` symbols, 4x
+  oversampled).
+- **`13_fft_correlation_demo.png`** -- `fft_correlation_demod` laid open on
+  one received symbol (hyperbolic, symbol 33, 10 dB SNR): `|S[k]|` and
+  `|R[k]|`, the two FFT magnitudes; what conjugating `R[k]` actually changes
+  (`Im{.}` flips sign, `Re{.}` doesn't -- magnitude is unchanged, so a
+  magnitude plot of the conjugate would just repeat the previous panel);
+  then `|IDFT{S[k]*conj(R[k])}[l]|`, the correlation recovered from their
+  product -- a single sharp peak at the true shift, versus the noise floor
+  and the two broad, individually uninformative spectra it was built from.
+  The peak's x-position is a *lag* (132 samples), not the symbol index
+  directly -- the annotation on the plot spells out the conversion
+  (`132 / (N/M) = 132/4 = symbol 33`), matching `chirp.py`'s
+  `τ_m = round(m*N/M)`.
+- **`14_ser_vs_snr_all_shapes.png`** -- every trajectory shape's SER-vs-SNR
+  waterfall on one plot, all decoded with `fft_correlation_demod` so the
+  comparison is fair. The curves sit almost on top of each other --
+  `sigmoid` trails slightly -- confirming that trajectory shape by itself
+  buys essentially nothing for plain-noise tolerance once decoding is no
+  longer the bottleneck; whatever nonlinear shape is good for, it isn't this.
 - **`03_ser_vs_snr.png`** -- the central result. `linear` decodes correctly
   with either demodulator, with the FFT decoder trailing the matched-filter
   bank by several dB (the cost of the cheap trick even when it applies). The
