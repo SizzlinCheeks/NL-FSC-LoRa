@@ -59,7 +59,17 @@ $g$ is the thing being changed. $g(u)=u$ reproduces the linear ramp — plain
 LoRa. Any other $g$ (curved, S-shaped, whatever) produces a curved
 frequency trajectory instead. $g$ is normalized so $g(0)=0$ and $g(1)=1$,
 which just means the trajectory always starts at the bottom of the band and
-ends at the top, no matter its shape in between.
+ends at the top, no matter its shape in between. Every shape this project
+tests, side by side — including hyperbolic FM (HFM), the shape that
+Chapter 5 comes back to for its Doppler properties:
+
+![Instantaneous frequency and chirp rate for each trajectory shape: linear, quadratic, sigmoid, sinusoidal, exponential, hyperbolic](pictures/01_frequency_trajectories.png)
+
+The left panel is $f(t)$ itself — this is literally what "the trajectory"
+means, visually. The right panel is $df/dt$, the *chirp rate*: notice
+`linear`'s rate is a flat line (constant rate, by construction) while every
+other shape's rate visibly changes over the symbol — that difference is
+exactly what breaks the standard FFT-bin trick in Chapter 2.
 
 Frequency integrates to phase, and phase exponentiates to the actual
 transmitted waveform:

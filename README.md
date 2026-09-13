@@ -117,8 +117,10 @@ python examples/run_experiments.py   # writes comparison plots to examples/outpu
 above for `linear`, `quadratic`, `sigmoid`, `sinusoidal`, and `exponential`
 trajectories at SF7 / 125 kHz (a standard LoRa configuration):
 
-- **`01_frequency_trajectories.png`** -- `f(t)` and `df/dt` per shape. Linear
-  has constant chirp rate by construction; the others don't.
+- **`01_frequency_trajectories.png`** -- `f(t)` and `df/dt` per shape,
+  including `hyperbolic` (plotted as a deviation from its own center
+  frequency, since HFM isn't well-posed centered at 0 Hz). Linear has
+  constant chirp rate by construction; the others don't.
 - **`02_autocorrelation.png`** -- sidelobe structure differs sharply by
   shape; `sigmoid`'s slow edges cost it several dB of peak-to-sidelobe ratio
   versus `linear`.

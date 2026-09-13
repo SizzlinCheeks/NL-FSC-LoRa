@@ -49,22 +49,26 @@ OVERSAMPLING = 4
 SEED = 0
 
 SHAPES = ["linear", "quadratic", "sigmoid", "sinusoidal", "exponential"]
+TRAJECTORY_PLOT_SHAPES = SHAPES + ["hyperbolic"]
 
 
 def cfg_for(traj: str) -> ChirpConfig:
     g, _ = TRAJECTORIES[traj]
-    return ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g)
+    f_center = hyperbolic_center_freq(BANDWIDTH) if traj == "hyperbolic" else 0.0
+    return ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
 
 
 def plot_trajectories():
+    # Plotted as f(t) - f_center so every shape (including hyperbolic, which
+    # is only well-posed away from 0 Hz) is comparable on the same axes.
     fig, (ax_f, ax_rate) = plt.subplots(1, 2, figsize=(11, 4))
-    for traj in SHAPES:
+    for traj in TRAJECTORY_PLOT_SHAPES:
         cfg = cfg_for(traj)
         f = base_frequency(cfg)
         t = np.arange(cfg.n_samples) / cfg.sample_rate * 1e3
-        ax_f.plot(t, f / 1e3, label=traj)
+        ax_f.plot(t, (f - cfg.f_center) / 1e3, label=traj)
         ax_rate.plot(t, instantaneous_chirp_rate(f, cfg.sample_rate) / 1e9, label=traj)
-    ax_f.set(xlabel="t (ms)", ylabel="f(t) (kHz)", title="Instantaneous frequency")
+    ax_f.set(xlabel="t (ms)", ylabel="f(t) - f_center (kHz)", title="Instantaneous frequency")
     ax_rate.set(xlabel="t (ms)", ylabel="df/dt (GHz/s)", title="Instantaneous chirp rate")
     ax_f.legend()
     fig.tight_layout()
