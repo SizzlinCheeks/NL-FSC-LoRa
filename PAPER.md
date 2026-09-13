@@ -8,6 +8,12 @@ frequency-tracking loop. Each result links to the code that implements it and
 the tests that verify it, so every equation here has a numerical check
 sitting next to it in the repository.
 
+> **Looking for the intuitive version?** [`NARRATIVE.md`](NARRATIVE.md) tells
+> this same story in a more readable, example-driven format for readers who
+> already know standard LoRa but want the "why" behind each step before the
+> equations. This document is the dense reference version — precise
+> derivations, proofs, and code/test citations for lookup.
+
 ## Notation
 
 | Symbol | Meaning |
