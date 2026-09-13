@@ -436,6 +436,7 @@ def plot_ser_vs_snr_all_shapes():
         ax.plot(snr_range, np.maximum(np.mean(sers, axis=0), floor), marker="o", ms=3, label=traj)
     ax.set(xlabel="SNR (dB)", ylabel="symbol error rate", yscale="log",
            title=f"SER vs SNR, every trajectory shape ({len(seeds)*n_symbols} symbols/point, fft_correlation_demod)")
+    ax.invert_xaxis()  # read left-to-right as a channel degrading over time: good SNR first, worsening after
     ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "14_ser_vs_snr_all_shapes.png"), dpi=150)

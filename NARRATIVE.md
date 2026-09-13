@@ -305,7 +305,11 @@ plain noise tolerance, decoded the same way for everyone?
 
 ![Symbol error rate vs. SNR for every trajectory shape, all decoded with fft_correlation_demod](pictures/14_ser_vs_snr_all_shapes.png)
 
-Barely. Every shape's waterfall curve sits almost on top of the others —
+(The x-axis runs from -10 dB down to -32 dB, left to right — read it as a
+channel that starts out clean and degrades over time, rather than the
+usual "worst to best" waterfall convention.)
+
+Barely. Every shape's curve sits almost on top of the others —
 `sigmoid` trails the rest by a small margin near the knee of the curve, but
 there's no shape here that's dramatically more or less noise-tolerant than
 `linear` once the decoder itself isn't the bottleneck. So curving the
