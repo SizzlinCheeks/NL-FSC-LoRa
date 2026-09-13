@@ -236,20 +236,28 @@ m_hat = int(np.argmax(np.abs(corr[valid_lags])))          # look up the M known 
 
 Here is that computation on one actual received symbol (hyperbolic trajectory,
 symbol 33, 10 dB SNR): `|S[k]|` and `|R[k]|`, the two FFT magnitudes the code
-above starts from, and `|C[l]|`, the correlation the IFFT recovers from
-their product.
+above starts from; what conjugating `R[k]` actually changes; and `|C[l]|`,
+the correlation the IFFT recovers from their product.
 
-![FFT of the reference waveform, FFT of the received signal, and the resulting correlation after IFFT, with a clear peak at the true symbol shift](pictures/13_fft_correlation_demo.png)
+![FFT of the reference waveform, FFT of the received signal, what conjugation changes, and the resulting correlation after IFFT, with a clear peak at the true symbol shift](pictures/13_fft_correlation_demo.png)
 
 Neither of the first two panels tells you the symbol by itself — both
 spectra are spread across many frequency bins, an unavoidable property of
 a chirp, since it sweeps through a wide range of frequencies over the
-symbol. The third panel is the payoff: multiplying those two spectra
-together and taking one IFFT concentrates all of that spread-out energy
-into a single sharp spike, sitting exactly at the true shift (dashed line).
-The red dots are the `M` positions `τ_m` actually correspond to real
-symbols — `argmax` over just those `M` points is the whole decoder, and it
-lands on the correct one here.
+symbol. The third panel answers a natural question: what does *conjugating*
+`R[k]` actually do to it? Not much to its magnitude — `|conj(R[k])| = |R[k]|`
+always, so a magnitude plot of it would just repeat the second panel.
+Conjugation only touches the imaginary part, flipping its sign
+(equivalently, it negates the phase); the real part is untouched. That's a
+small-looking change, but it's exactly what's needed: it's what lets the
+product `S[k]·conj(R[k])` add up *constructively* at the one lag where the
+two waveforms actually line up, and mostly cancel elsewhere. The fourth
+panel is the payoff: multiplying those two spectra together and taking one
+IFFT concentrates all of that spread-out energy into a single sharp spike,
+sitting exactly at the true shift (dashed line). The red dots are the `M`
+positions `τ_m` actually correspond to real symbols — `argmax` over just
+those `M` points is the whole decoder, and it lands on the correct one
+here.
 
 The mental model for the difference between Chapter 3 and this chapter:
 
@@ -290,6 +298,20 @@ checks that this decoder gives the *identical* decision as the brute-force
 one from Chapter 3 on every trial, not merely similar accuracy.
 
 (Implementation: `nlfsc_lora/receiver.py::fft_correlation_demod`.)
+
+Now that every shape has a decoder that's both correct and cheap, a fair
+comparison is finally possible: does the trajectory shape itself affect
+plain noise tolerance, decoded the same way for everyone?
+
+![Symbol error rate vs. SNR for every trajectory shape, all decoded with fft_correlation_demod](pictures/14_ser_vs_snr_all_shapes.png)
+
+Barely. Every shape's waterfall curve sits almost on top of the others —
+`sigmoid` trails the rest by a small margin near the knee of the curve, but
+there's no shape here that's dramatically more or less noise-tolerant than
+`linear` once the decoder itself isn't the bottleneck. So curving the
+trajectory isn't buying noise tolerance. If it's going to earn its keep, it
+has to be for some other reason — which is exactly the question Chapter 5
+picks up.
 
 ---
 

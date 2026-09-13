@@ -126,10 +126,18 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   versus `linear`.
 - **`13_fft_correlation_demo.png`** -- `fft_correlation_demod` laid open on
   one received symbol (hyperbolic, symbol 33, 10 dB SNR): `|S[k]|` and
-  `|R[k]|`, the two FFT magnitudes, then `|IDFT{S[k]*conj(R[k])}[l]|`, the
-  correlation recovered from their product -- a single sharp peak at the
-  true shift, versus the noise floor and the two broad, individually
-  uninformative spectra it was built from.
+  `|R[k]|`, the two FFT magnitudes; what conjugating `R[k]` actually changes
+  (`Im{.}` flips sign, `Re{.}` doesn't -- magnitude is unchanged, so a
+  magnitude plot of the conjugate would just repeat the previous panel);
+  then `|IDFT{S[k]*conj(R[k])}[l]|`, the correlation recovered from their
+  product -- a single sharp peak at the true shift, versus the noise floor
+  and the two broad, individually uninformative spectra it was built from.
+- **`14_ser_vs_snr_all_shapes.png`** -- every trajectory shape's SER-vs-SNR
+  waterfall on one plot, all decoded with `fft_correlation_demod` so the
+  comparison is fair. The curves sit almost on top of each other --
+  `sigmoid` trails slightly -- confirming that trajectory shape by itself
+  buys essentially nothing for plain-noise tolerance once decoding is no
+  longer the bottleneck; whatever nonlinear shape is good for, it isn't this.
 - **`03_ser_vs_snr.png`** -- the central result. `linear` decodes correctly
   with either demodulator, with the FFT decoder trailing the matched-filter
   bank by several dB (the cost of the cheap trick even when it applies). The

@@ -23,9 +23,12 @@ g(t/T). Produces PNGs under examples/output/:
   12_dual_edge_afc.png           - dual-edge rate sensing driving a multi-burst AFC loop
                                     that tracks a drifting Doppler, vs a static correction
   13_fft_correlation_demo.png    - fft_correlation_demod laid open: |S[k]| and |R[k]|
-                                    (broadband, uninformative on their own), then
-                                    |IDFT{S[k]*conj(R[k])}[l]|, where all that broadband
-                                    energy concentrates into one sharp correlation peak
+                                    (broadband, uninformative on their own), what
+                                    conjugating R[k] actually changes (Im{.} flips sign,
+                                    Re{.} doesn't), then |IDFT{S[k]*conj(R[k])}[l]|, where
+                                    all that broadband energy concentrates into one peak
+  14_ser_vs_snr_all_shapes.png   - SER vs SNR for every trajectory shape at once, all
+                                    decoded with fft_correlation_demod for a fair comparison
 
 Run with: python examples/run_experiments.py
 """
@@ -124,7 +127,7 @@ def plot_fft_correlation_demo():
     m_hat = int(np.argmax(np.abs(corr[valid_lags])))
     tau_true = m_true * n // cfg.M
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    fig, axes = plt.subplots(1, 4, figsize=(20, 4))
 
     axes[0].plot(np.abs(S))
     axes[0].set(xlabel="k", ylabel="|S[k]|", title="FFT of the reference waveform")
@@ -132,11 +135,20 @@ def plot_fft_correlation_demo():
     axes[1].plot(np.abs(R), color="tab:orange")
     axes[1].set(xlabel="k", ylabel="|R[k]|", title=f"FFT of the received signal (symbol {m_true}, {snr_db:.0f} dB SNR)")
 
-    axes[2].plot(np.abs(corr), color="tab:green", label="|C[l]| = |IDFT{S[k]*conj(R[k])}[l]|")
-    axes[2].axvline(tau_true, color="k", linestyle="--", linewidth=1, label=f"true shift  = {tau_true}")
-    axes[2].scatter(valid_lags, np.abs(corr[valid_lags]), s=10, color="tab:red", zorder=3, label="the M valid symbol positions")
-    axes[2].set(xlabel="lag l", ylabel="|C[l]|", title=f"Correlation after IFFT  (decoded m={m_hat}, true m={m_true})")
+    # |conj(R[k])| is identical to |R[k]| -- conjugation never changes magnitude.
+    # What it actually does is flip the sign of the imaginary part (equivalently,
+    # negate the phase); that's the only part of R[k] this panel needs to show.
+    axes[2].plot(np.imag(R), color="tab:orange", alpha=0.6, label="Im{R[k]}")
+    axes[2].plot(np.imag(np.conj(R)), color="tab:purple", label="Im{conj(R[k])} = -Im{R[k]}")
+    axes[2].axhline(0, color="k", linewidth=0.6)
+    axes[2].set(xlabel="k", ylabel="amplitude", title="Conjugating R[k]: Re{·} unchanged, Im{·} flips sign")
     axes[2].legend(fontsize=8, loc="upper right")
+
+    axes[3].plot(np.abs(corr), color="tab:green", label="|C[l]| = |IDFT{S[k]*conj(R[k])}[l]|")
+    axes[3].axvline(tau_true, color="k", linestyle="--", linewidth=1, label=f"true shift  = {tau_true}")
+    axes[3].scatter(valid_lags, np.abs(corr[valid_lags]), s=10, color="tab:red", zorder=3, label="the M valid symbol positions")
+    axes[3].set(xlabel="lag l", ylabel="|C[l]|", title=f"Correlation after IFFT  (decoded m={m_hat}, true m={m_true})")
+    axes[3].legend(fontsize=8, loc="upper right")
 
     fig.suptitle("The two FFTs are broadband and uninformative alone; the IFFT of their product concentrates into one peak")
     fig.tight_layout()
@@ -401,6 +413,35 @@ def plot_hfm_vs_quadratic_ser():
     plt.close(fig)
 
 
+def plot_ser_vs_snr_all_shapes():
+    """SER vs SNR for every trajectory shape in the project on one plot, all
+    decoded with the same receiver (fft_correlation_demod -- the only one
+    that's both fast and correct regardless of shape), so it's a fair,
+    apples-to-apples comparison rather than each shape getting whichever
+    decoder happens to work for it. All shapes embedded on the same absolute
+    frequency band, as in plot_hfm_vs_quadratic_ser above.
+    """
+    f_center = hyperbolic_center_freq(BANDWIDTH)
+    shapes = SHAPES + ["hyperbolic"]
+    snr_range = np.arange(-32, -8, 2)
+    seeds = [0, 1, 2]
+    n_symbols = 3000
+    floor = 1.0 / (2 * len(seeds) * n_symbols)  # so a measured SER of exactly 0 still shows on the log axis
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for traj in shapes:
+        g, _ = TRAJECTORIES[traj]
+        cfg = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g, f_center=f_center)
+        sers = [ser_vs_snr(cfg, snr_range, n_symbols=n_symbols, demod="fft_corr", seed=s) for s in seeds]
+        ax.plot(snr_range, np.maximum(np.mean(sers, axis=0), floor), marker="o", ms=3, label=traj)
+    ax.set(xlabel="SNR (dB)", ylabel="symbol error rate", yscale="log",
+           title=f"SER vs SNR, every trajectory shape ({len(seeds)*n_symbols} symbols/point, fft_correlation_demod)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "14_ser_vs_snr_all_shapes.png"), dpi=150)
+    plt.close(fig)
+
+
 def plot_dual_edge_afc():
     """Does measuring rate-of-change at both ends of the swept bandwidth, tracked
     across a sequence of bursts, actually help a receiver "lock back onto center
@@ -474,6 +515,7 @@ def main():
     plot_lora_cfo_correction()
     plot_local_rate_estimator()
     plot_hfm_vs_quadratic_ser()
+    plot_ser_vs_snr_all_shapes()
     plot_dual_edge_afc()
     print(f"Wrote figures to {OUT_DIR}")
 
