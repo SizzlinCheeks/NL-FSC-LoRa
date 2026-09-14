@@ -546,6 +546,62 @@ verifies this concretely for a case where one edge genuinely does sit on
 the discontinuity — the corrupted edge is automatically downweighted, and
 the combined estimate stays accurate because the clean edge dominates.
 
+Put together, 6.1 and 6.2 form one per-burst pipeline, and the order
+matters more than it might look at first: decoding comes *before*
+measuring, not after. The receiver can't tell "the trajectory looks
+different" from "there's a CFO" without already knowing which symbol's
+trajectory it's comparing against — trying to measure frequency and rate
+*before* decoding is exactly what Chapter 3's brute-force detour and
+`local_rate.py` both ran into, and exactly what this design sidesteps by
+only ever measuring a *residual*, never a blind guess. Each edge
+measurement is a direct cubic fit to the local unwrapped phase, not a
+dechirp against a reference waveform (that's Chapter 2's operation, used
+here only indirectly, via the `symbol_duration`/`bandwidth`/`g` it takes to
+compute what each edge's frequency and rate are *expected* to be for the
+now-known symbol):
+
+```
+                  burst i arrives (rx)
+                           │
+                           ▼
+    ┌─────────────────────────────────────────────┐
+    │ correct_cfo(rx, cfo_tracked)                │  uses the estimate carried
+    └─────────────────────────────────────────────┘  over from burst i-1, not
+                           │                          anything measured on
+                           ▼                          burst i yet
+    ┌─────────────────────────────────────────────┐
+    │ fft_correlation_demod                       │  decode FIRST -- no
+    │ → decoded symbol m_hat                      │  frequency-domain
+    └─────────────────────────────────────────────┘  measurement needed here
+                           │
+                           ▼
+    ┌─────────────────────────────────────────────┐
+    │ dual_edge_cfo_estimate(..., m_hat)          │  the two-edge measurement
+    │ -- only possible now that m_hat is known    │  and quality-weighted
+    └─────────────────────────────────────────────┘  combine from §6.1-6.2
+                           │
+                           ▼
+    ┌─────────────────────────────────────────────┐
+    │ tracker.update(measurement)                 │
+    │ AFCLoop: tracks CFO alone, or               │
+    │ KalmanAFCLoop: tracks CFO + CFO-rate (§6.4) │
+    │ -- both reject implausible outlier          │
+    │ measurements before trusting them           │
+    └─────────────────────────────────────────────┘
+                           │
+                           ▼
+                 cfo_tracked (updated)
+                           │
+                           └───▶ used to correct burst i+1
+```
+
+The loop is one burst behind by construction: what corrects burst $i{+}1$
+is a measurement made *from* burst $i$, after burst $i$'s own symbol was
+already known. There's no path in this design where frequency is measured
+before the symbol is decoded — that's not an implementation detail, it's
+the whole reason this approach avoids `local_rate.py`'s noise floor and
+wrap-glitch failure band in the first place.
+
 ### 6.3 The tracking loop
 
 The receiver doesn't throw away its old estimate and fully replace it
