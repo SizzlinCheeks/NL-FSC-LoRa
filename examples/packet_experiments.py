@@ -252,6 +252,9 @@ def plot_all(t1, t2, t3):
     axes[2].set(xlabel="SNR (dB)", yscale="log", title="Test 3: UAV-style Doppler reversal")
     axes[2].legend(fontsize=8)
 
+    for ax in axes:
+        ax.invert_xaxis()  # read left-to-right as a channel degrading over time, matching 14_ser_vs_snr_all_shapes.png
+
     fig.suptitle("End-to-end packet test: preamble + random payload, SF=7, BW=500kHz, hyperbolic trajectory")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "20_packet_level_validation.png"), dpi=150)
