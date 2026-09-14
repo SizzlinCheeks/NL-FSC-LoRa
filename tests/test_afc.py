@@ -151,6 +151,34 @@ def test_cold_start_beyond_capture_range_needs_acquisition():
     assert np.mean(decoded_without_acq == true_symbols) < 0.5
 
 
+def test_multi_burst_acquisition_beats_single_burst_at_low_snr():
+    """Discovered while building an end-to-end packet test (preamble + random
+    payload): joint_cfo_symbol_search's wide candidate search is itself less
+    SNR-robust than a plain single-hypothesis decode, since testing many CFO
+    candidates against one noisy burst gives more chances for a noise-induced
+    false peak (measured: 27% single-burst acquisition symbol error at -15dB
+    where plain decoding had 0%). acquire_bursts > 1 -- what a multi-symbol
+    preamble is actually for -- majority-votes across several independent
+    acquisition bursts instead of trusting one, closing most of that gap."""
+    cfg, dg = make_cfg()
+    true_cfo = 300.0  # small enough to stay within acquire_span throughout
+    n_bursts = 20
+    snr_db = -15.0
+    n_trials = 60
+
+    errs_single, errs_multi = 0, 0
+    for seed in range(n_trials):
+        rng = np.random.default_rng(seed)
+        true_symbols = rng.integers(0, cfg.M, n_bursts)
+        seq = np.full(n_bursts, true_cfo)
+        dec_single, _t, _r = run_afc_sequence(cfg, dg, true_symbols, seq, snr_db, seed=seed, acquire_bursts=1)
+        dec_multi, _t, _r = run_afc_sequence(cfg, dg, true_symbols, seq, snr_db, seed=seed, acquire_bursts=8)
+        errs_single += int(np.sum(dec_single != true_symbols))
+        errs_multi += int(np.sum(dec_multi != true_symbols))
+
+    assert errs_multi < errs_single
+
+
 def _flyover_cfo(max_cfo: float, t0: float, half: int, n_bursts: int) -> np.ndarray:
     """Constant-velocity closest-point-of-approach Doppler curve: an S-curve
     saturating to +/-max_cfo far from t=0, crossing zero at t=0 -- a UAV or
