@@ -34,6 +34,14 @@ g(t/T). Produces PNGs under examples/output/:
                                     linear collapse to one clean tone/peak and hyperbolic not
   16_hyperbolic_symbol33_waveform.png - what the hyperbolic trajectory's symbol-33
                                     cyclic shift actually looks like, f(t) vs t
+  17_kalman_vs_expfilter_ramp.png - same 0-3000Hz linear drift as 12_dual_edge_afc.png,
+                                    fixed-gain AFCLoop vs a constant-velocity KalmanAFCLoop
+  18_uav_flyover_afc.png         - dual-edge AFC through a UAV-style Doppler sign
+                                    reversal (approach -> closest approach -> recede),
+                                    static vs AFCLoop vs KalmanAFCLoop
+  19_afc_rate_of_change_limit.png - decode accuracy vs peak Doppler rate at the sign
+                                    crossing: where dual-edge tracking actually breaks,
+                                    and how far that is from any realistic UAV/satellite rate
 
 Run with: python examples/run_experiments.py
 """
@@ -45,7 +53,7 @@ from functools import partial
 import matplotlib.pyplot as plt
 import numpy as np
 
-from nlfsc_lora.afc import run_afc_sequence
+from nlfsc_lora.afc import AFCLoop, KalmanAFCLoop, run_afc_sequence
 from nlfsc_lora.channel import awgn
 from nlfsc_lora.chirp import ChirpConfig, base_frequency, base_waveform, symbol_waveform
 from nlfsc_lora.doppler import doppler_scale_response
@@ -589,6 +597,188 @@ def plot_dual_edge_afc():
     plt.close(fig)
 
 
+def plot_kalman_vs_expfilter_ramp():
+    """AFCLoop's documented steady-state lag under a linear drift (rho per burst)
+    is rho/gain -- a type-1 tracking-loop error, not measurement noise (afc.py
+    module docstring). KalmanAFCLoop tracks CFO *and* CFO-rate jointly instead of
+    chasing the latest measurement by a fixed fraction, so it should settle onto
+    a constant drift rate with much less lag once its rate estimate converges.
+    Same 0-3000Hz ramp as plot_dual_edge_afc, same everything else, so the two
+    trackers' tracked-vs-true curves are directly comparable.
+    """
+    bw = BANDWIDTH
+    g, dg = TRAJECTORIES["hyperbolic"]
+    cfg = ChirpConfig(sf=SF, bandwidth=bw, sample_rate=OVERSAMPLING * bw, g=g, f_center=hyperbolic_center_freq(bw))
+    n_bursts = 200
+    max_cfo = 3000.0
+    true_cfo = np.linspace(0, max_cfo, n_bursts)
+    n_seeds = 40
+
+    rng0 = np.random.default_rng(0)
+    true_symbols_example = rng0.integers(0, cfg.M, n_bursts)
+    _d, tracked_exp, _r = run_afc_sequence(cfg, dg, true_symbols_example, true_cfo, snr_db=10, seed=0,
+                                            loop=AFCLoop(gain=0.3))
+    _d, tracked_kal, _r = run_afc_sequence(cfg, dg, true_symbols_example, true_cfo, snr_db=10, seed=0,
+                                            loop=KalmanAFCLoop())
+
+    correct_exp = np.zeros((n_seeds, n_bursts), dtype=bool)
+    correct_kal = np.zeros((n_seeds, n_bursts), dtype=bool)
+    for s in range(n_seeds):
+        rng = np.random.default_rng(100 + s)
+        true_symbols = rng.integers(0, cfg.M, n_bursts)
+        dec_e, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=s, loop=AFCLoop(gain=0.3))
+        dec_k, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=s, loop=KalmanAFCLoop())
+        correct_exp[s] = dec_e == true_symbols
+        correct_kal[s] = dec_k == true_symbols
+
+    fig, (ax_cfo, ax_acc) = plt.subplots(1, 2, figsize=(12, 4.5))
+    ax_cfo.plot(true_cfo, label="true CFO", lw=1.5, color="k")
+    ax_cfo.plot(tracked_exp, label="AFCLoop (fixed gain=0.3)", lw=1.0, alpha=0.85)
+    ax_cfo.plot(tracked_kal, label="KalmanAFCLoop", lw=1.0, alpha=0.85)
+    ax_cfo.set(xlabel="burst index", ylabel="CFO (Hz)", title="Tracked vs true CFO (one run)")
+    ax_cfo.legend(fontsize=8)
+
+    ax_acc.plot(correct_exp.mean(axis=0), label="AFCLoop (fixed gain=0.3)")
+    ax_acc.plot(correct_kal.mean(axis=0), label="KalmanAFCLoop")
+    ax_acc.set(xlabel="burst index", ylabel="P(correct decode)",
+               title=f"Decode accuracy vs burst index ({n_seeds} seeds)")
+    ax_acc.legend(fontsize=8)
+    fig.suptitle(f"Fixed-gain vs Kalman tracking, same 0-{max_cfo:.0f}Hz linear drift over {n_bursts} bursts")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "17_kalman_vs_expfilter_ramp.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_uav_flyover_afc():
+    """A satellite pass drifts the CFO in roughly one direction; a low-altitude
+    UAV or drone passing near the receiver does not -- it approaches (positive
+    Doppler), crosses closest approach (Doppler through zero), then recedes
+    (negative Doppler), all within the same short pass. Model this with the
+    standard constant-velocity closest-point-of-approach Doppler curve:
+
+        f_d(t) = -max_cfo * t / sqrt(t^2 + t0^2)
+
+    an S-curve saturating to +/-max_cfo far from closest approach, crossing
+    zero at t=0, with t0 (bursts) controlling how many bursts the sign flip
+    takes. t0=90 here (peak instantaneous rate max_cfo/t0 ~ 33 Hz/burst) is
+    comfortably inside the working region found by
+    plot_afc_rate_of_change_limit below (the cliff sits around ~55 Hz/burst,
+    itself many orders of magnitude past any realistic UAV or satellite
+    Doppler acceleration) -- this figure is the positive result: the same
+    two-edge measurement this project has used throughout does track a true
+    sign reversal, not just a monotonic ramp, once two real bugs found while
+    testing this scenario over long sequences are fixed (see afc.py's
+    max_jump_hz / innovation_gate and their docstrings: dual_edge_cfo_estimate
+    occasionally, ~1 in 400 measured, passes its own quality check while still
+    being wildly wrong, and without a sanity gate on the tracker that one bad
+    reading was enough to permanently derail the loop for the rest of the run).
+    """
+    bw = BANDWIDTH
+    g, dg = TRAJECTORIES["hyperbolic"]
+    cfg = ChirpConfig(sf=SF, bandwidth=bw, sample_rate=OVERSAMPLING * bw, g=g, f_center=hyperbolic_center_freq(bw))
+    max_cfo = 3000.0
+    t0 = 90.0  # bursts; peak instantaneous rate = max_cfo/t0 ~ 33 Hz/burst, well inside the working region
+    half = 360
+    n_bursts = 2 * half
+    t = np.linspace(-half, half, n_bursts)
+    true_cfo = -max_cfo * t / np.sqrt(t ** 2 + t0 ** 2)
+    n_seeds = 40
+
+    rng0 = np.random.default_rng(0)
+    true_symbols_example = rng0.integers(0, cfg.M, n_bursts)
+    _d, tracked_exp, _r = run_afc_sequence(cfg, dg, true_symbols_example, true_cfo, snr_db=10, seed=0,
+                                            loop=AFCLoop(gain=0.3))
+    _d, tracked_kal, _r = run_afc_sequence(cfg, dg, true_symbols_example, true_cfo, snr_db=10, seed=0,
+                                            loop=KalmanAFCLoop())
+
+    correct_static = np.zeros((n_seeds, n_bursts), dtype=bool)
+    correct_exp = np.zeros((n_seeds, n_bursts), dtype=bool)
+    correct_kal = np.zeros((n_seeds, n_bursts), dtype=bool)
+    for s in range(n_seeds):
+        rng = np.random.default_rng(100 + s)
+        true_symbols = rng.integers(0, cfg.M, n_bursts)
+        dec_s, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=s, loop=AFCLoop(gain=0.0))
+        dec_e, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=s, loop=AFCLoop(gain=0.3))
+        dec_k, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=s, loop=KalmanAFCLoop())
+        correct_static[s] = dec_s == true_symbols
+        correct_exp[s] = dec_e == true_symbols
+        correct_kal[s] = dec_k == true_symbols
+
+    fig, (ax_cfo, ax_acc) = plt.subplots(1, 2, figsize=(12, 4.5))
+    ax_cfo.plot(true_cfo, label="true CFO (UAV flyover)", lw=1.5, color="k")
+    ax_cfo.plot(tracked_exp, label="AFCLoop (fixed gain=0.3)", lw=1.0, alpha=0.85)
+    ax_cfo.plot(tracked_kal, label="KalmanAFCLoop", lw=1.0, alpha=0.85)
+    ax_cfo.axhline(0, color="gray", linewidth=0.6)
+    ax_cfo.set(xlabel="burst index", ylabel="CFO (Hz)", title="Tracked vs true CFO through a Doppler sign reversal")
+    ax_cfo.legend(fontsize=8)
+
+    ax_acc.plot(correct_static.mean(axis=0), label="static (acquire once, gain=0)")
+    ax_acc.plot(correct_exp.mean(axis=0), label="AFCLoop (fixed gain=0.3)")
+    ax_acc.plot(correct_kal.mean(axis=0), label="KalmanAFCLoop")
+    ax_acc.set(xlabel="burst index", ylabel="P(correct decode)",
+               title=f"Decode accuracy vs burst index ({n_seeds} seeds)")
+    ax_acc.legend(fontsize=8)
+    fig.suptitle(f"Dual-edge AFC through an approach/recede Doppler reversal (±{max_cfo:.0f}Hz, {n_bursts} bursts)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "18_uav_flyover_afc.png"), dpi=150)
+    plt.close(fig)
+
+
+def plot_afc_rate_of_change_limit():
+    """Where does dual-edge tracking actually stop working through a Doppler
+    sign reversal? Sweep the flyover curve's steepness (t0, bursts) and plot
+    decode accuracy against the resulting peak instantaneous rate (max_cfo/t0,
+    Hz/burst) for both trackers. There is a real cliff, found by testing, not
+    assumed: both trackers hold ~1.0 accuracy below roughly 55 Hz/burst and
+    collapse above roughly 100 Hz/burst. For context, 55 Hz/burst at this
+    SF/bandwidth (symbol duration ~1.02 ms) is about 54 kHz/s of Doppler
+    *acceleration* -- orders of magnitude past any real satellite or UAV
+    scenario, so the cliff itself is not a practical concern, but it is a
+    genuine limit of this architecture worth knowing rather than assuming
+    away: past it, a receiver correcting with its own most recent estimate
+    falls outside fft_correlation_demod's capture range, decodes the wrong
+    symbol, and that wrong symbol corrupts the next measurement too.
+    """
+    bw = BANDWIDTH
+    g, dg = TRAJECTORIES["hyperbolic"]
+    cfg = ChirpConfig(sf=SF, bandwidth=bw, sample_rate=OVERSAMPLING * bw, g=g, f_center=hyperbolic_center_freq(bw))
+    max_cfo = 3000.0
+    t0_values = [15, 20, 25, 30, 35, 40, 45, 55, 70, 90, 150, 400]
+    n_seeds = 12
+
+    rates, acc_afc, acc_kal = [], [], []
+    for t0 in t0_values:
+        half = max(150, int(4 * t0))
+        n_bursts = 2 * half
+        t = np.linspace(-half, half, n_bursts)
+        true_cfo = -max_cfo * t / np.sqrt(t ** 2 + t0 ** 2)
+        a_accs, k_accs = [], []
+        for s in range(n_seeds):
+            rng = np.random.default_rng(100 + s)
+            true_symbols = rng.integers(0, cfg.M, n_bursts)
+            dec_a, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=s, loop=AFCLoop(gain=0.3))
+            dec_k, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=s, loop=KalmanAFCLoop())
+            a_accs.append((dec_a == true_symbols).mean())
+            k_accs.append((dec_k == true_symbols).mean())
+        rates.append(max_cfo / t0)
+        acc_afc.append(np.mean(a_accs))
+        acc_kal.append(np.mean(k_accs))
+
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    ax.plot(rates, acc_afc, marker="o", ms=4, label="AFCLoop (fixed gain=0.3)")
+    ax.plot(rates, acc_kal, marker="o", ms=4, label="KalmanAFCLoop")
+    ax.axvline(1.0, color="tab:green", linestyle=":", linewidth=2,
+               label="generous upper bound for realistic UAV/satellite rates (~1 Hz/burst)")
+    ax.set(xlabel="peak instantaneous Doppler rate at sign crossing (Hz/burst)",
+           ylabel="mean decode accuracy", xscale="log")
+    ax.set_title(f"Dual-edge AFC through a Doppler sign reversal:\nwhere tracking actually breaks ({n_seeds} seeds/point)", fontsize=11)
+    ax.set_xlim(0.5, 250.0)  # headroom left of the realistic-rate marker so it's visibly separate from the axis
+    ax.legend(fontsize=8, loc="lower left")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "19_afc_rate_of_change_limit.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -607,6 +797,9 @@ def main():
     plot_dechirp_linear_vs_hyperbolic()
     plot_hyperbolic_symbol_waveform()
     plot_dual_edge_afc()
+    plot_kalman_vs_expfilter_ramp()
+    plot_uav_flyover_afc()
+    plot_afc_rate_of_change_limit()
     print(f"Wrote figures to {OUT_DIR}")
 
 

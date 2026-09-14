@@ -369,9 +369,42 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   (`~drift_rate/gain`), not just noise jitter -- push the drift rate too far
   relative to the loop gain and bin size and the lag alone can exceed the
   tolerance (`tests/test_afc.py`'s docstring works the numbers for one such
-  case). This project uses a plain first-order loop; a proportional-integral
-  ("type-2") loop would remove that steady-state lag entirely and is a
-  natural next step, not yet implemented here.
+  case). `17_kalman_vs_expfilter_ramp.png` below follows up on that lag with
+  a second-order tracker; `18_uav_flyover_afc.png` and
+  `19_afc_rate_of_change_limit.png` test this same loop against a Doppler
+  that reverses sign rather than just a monotonic ramp.
+- **`17_kalman_vs_expfilter_ramp.png`** -- does a smarter tracker actually
+  reduce `AFCLoop`'s steady-state ramp lag? `KalmanAFCLoop` tracks CFO *and*
+  its rate jointly (a constant-velocity Kalman filter) instead of chasing
+  the latest measurement by a fixed fraction, which is the textbook fix for
+  a type-1 lag. On the same drift as `12_dual_edge_afc.png`: a real but
+  modest improvement, not dramatic -- the fixed-gain loop was already
+  reasonably matched to a smooth, near-constant drift. Tuning this mattered:
+  an initial, untested guess for the measurement-noise parameter was off by
+  ~85x from the actual measured noise of `dual_edge_cfo_estimate`
+  (~184 Hz std at SF7/10dB SNR), and made the filter *worse* than the
+  simple loop until corrected -- a reminder that a Kalman filter is only as
+  good as its noise parameters, and those are worth measuring, not guessing.
+- **`18_uav_flyover_afc.png`** and **`19_afc_rate_of_change_limit.png`** --
+  a satellite pass drifts the CFO in roughly one direction; a low-altitude
+  UAV or drone approaching, passing closest approach, then receding produces
+  a Doppler that reverses sign within the same run. Modeled with the
+  standard constant-velocity closest-point-of-approach curve
+  (`f_d(t) = -f_max * t / sqrt(t^2 + t0^2)`, an S-curve through zero),
+  the same two-edge measurement this project has used throughout does track
+  the full reversal (`18`), with a real caveat found only by testing much
+  longer sequences than the original 200-burst demo: `dual_edge_cfo_estimate`'s
+  quality check occasionally (~1/400, measured) passes a measurement that's
+  wildly wrong anyway, and without a second check, one such event permanently
+  derailed the loop for the rest of an 8000-burst run -- not a Doppler-rate
+  problem, a missing outlier gate. Both trackers now reject implausible
+  measurements before trusting them (`AFCLoop.max_jump_hz`,
+  `KalmanAFCLoop.innovation_gate`), which fixes it. `19` sweeps the
+  reversal's steepness to find the *real* rate-of-change limit rather than
+  assume one: both trackers hold ~1.0 accuracy up to ~55 Hz/burst and
+  collapse above ~100 -- at this configuration's symbol duration, ~54 kHz/s
+  of Doppler acceleration, several orders of magnitude past any physically
+  realistic satellite or UAV scenario.
 
 ## Extending it
 

@@ -338,6 +338,79 @@ error, not merely noise jitter; push $\rho$ too far relative to $\gamma$ and
 the tolerance can be exceeded by the lag alone, independent of measurement
 noise. Implementation: `nlfsc_lora/afc.py::AFCLoop`.
 
+### 6.4 A joint CFO/rate tracker, an outlier-gating fix, and a sign-reversing Doppler
+
+**A second-order tracker.** A constant-velocity Kalman filter carrying state
+$x = [\widehat{\mathrm{CFO}}, \widehat{\dot{\mathrm{CFO}}}]^\top$ subsumes
+§6.3's fixed-$\gamma$ loop: the predict step advances
+$\widehat{\mathrm{CFO}}[i+1] = \widehat{\mathrm{CFO}}[i] + \widehat{\dot{\mathrm{CFO}}}[i]$
+and holds $\widehat{\dot{\mathrm{CFO}}}[i+1] = \widehat{\dot{\mathrm{CFO}}}[i]$ each burst
+(a constant-velocity model), and a scalar measurement of $\widehat{\mathrm{CFO}}$
+alone updates both state components via the Kalman gain, computed from process noise $Q$ and
+measurement noise $R$ generalizes both a fixed loop gain and an ad hoc
+gain-schedule, computed from the noise statistics rather than hand-tuned.
+Measured, not assumed: `dual_edge_cfo_estimate`'s own noise at SF7/10 dB SNR
+is $\approx 184$ Hz std ($R \approx 3.4\times10^4$ Hz$^2$); an initial
+untested guess of $R=400$ Hz$^2$ was off by $\sim 85\times$ and made the
+filter overtrust individual measurements. Correctly tuned, it gives a real
+but modest reduction in §6.3's steady-state lag under the same linear drift
+(`examples/output/17_kalman_vs_expfilter_ramp.png`).
+Implementation: `nlfsc_lora/afc.py::KalmanAFCLoop`.
+
+**A discovered outlier-measurement failure mode.** Testing over sequences
+much longer than §6.3's 200-burst demonstration surfaced a real bug rather
+than a tuning issue: `dual_edge_cfo_estimate`'s mismatch-based quality gate
+occasionally ($\approx 1/400$, measured over 2000 trials at a fixed
+noiseless residual) passes a measurement 1–4.5 kHz from the truth with a
+passing mismatch score — a noisy cubic fit's rate coefficient can look
+self-consistent even when its frequency coefficient is badly wrong. Over a
+few hundred bursts this rarely triggers; over a multi-thousand-burst run it
+is close to certain to occur at least once, and with no second check the
+tracker trusts it, the next decode falls outside `fft_correlation_demod`'s
+capture range, and the corrupted decode poisons every subsequent
+measurement — permanent divergence with no recovery mechanism, confirmed
+directly on an 8000-burst run at a *constant* (easily trackable) offset.
+Both trackers now gate the innovation before it updates state
+(`AFCLoop.max_jump_hz`, a fixed threshold at $\approx 6\sigma$;
+`KalmanAFCLoop.innovation_gate`, a $\chi^2$-style test against the filter's
+own predicted variance $S$), which eliminates the divergence.
+
+**A sign-reversing Doppler (UAV/drone case).** §5–6 model a monotonic drift
+(satellite pass); a low-altitude UAV instead produces a Doppler that
+reverses sign — approach, closest approach, recede. Modeled with the
+standard constant-velocity closest-point-of-approach curve,
+
+$$
+f_d(t) = -f_{d,\max}\cdot\frac{t}{\sqrt{t^2+t_0^2}},
+$$
+
+an S-curve saturating to $\pm f_{d,\max}$ with $t_0$ (bursts) setting the
+sign-crossing steepness. With the outlier gate in place, both trackers
+follow the full reversal at high accuracy while a one-shot static
+correction fails once the drift leaves its acquisition point
+(`examples/output/18_uav_flyover_afc.png`). Sweeping $t_0$ finds the real
+rate-of-change limit rather than assuming one: accuracy holds near 1.0 up
+to a peak instantaneous rate of $\approx 55$ Hz/burst and collapses above
+$\approx 100$ Hz/burst (`examples/output/19_afc_rate_of_change_limit.png`).
+At this configuration's symbol duration ($\approx 1.02$ ms), 55 Hz/burst is
+$\approx 54$ kHz/s of Doppler *acceleration* — several orders of magnitude
+past any physically realistic satellite or UAV scenario, so the cliff is
+real but not the binding constraint for either case tested.
+
+This mirrors an independent, established result in the sonar/radar
+literature: HFM's Doppler-tolerant matched-filter response is well
+documented (Kroszczyński 1969), but it comes with a companion time/range
+bias under Doppler, given closed form in Murray et al. (2019) — the same
+underlying tradeoff as this project's own Chapter 5 lag finding, observed
+independently in a different field.
+
+Implementation: `nlfsc_lora/afc.py::KalmanAFCLoop`, `AFCLoop.max_jump_hz`,
+`KalmanAFCLoop.innovation_gate`. Tests:
+`tests/test_afc.py::test_afc_loop_gates_a_wild_outlier_measurement`,
+`test_kalman_loop_gates_a_wild_outlier_innovation`,
+`test_afc_tracks_through_a_doppler_sign_reversal`,
+`test_afc_fails_for_an_unrealistically_fast_doppler_reversal`.
+
 ---
 
 ## Summary
@@ -351,6 +424,9 @@ noise. Implementation: `nlfsc_lora/afc.py::AFCLoop`.
 | HFM's exact self-similarity under time-scaling | §5.2 | `doppler.py`, `trajectories.py::hyperbolic` | `test_doppler.py::test_hyperbolic_more_doppler_scale_tolerant_than_linear` |
 | Dual-edge CFO estimation | §6.1-6.2 | `afc.py::dual_edge_cfo_estimate` | `test_afc.py::test_dual_edge_estimate_exact_given_correct_symbol_noiseless` |
 | AFC tracking loop | §6.3 | `afc.py::AFCLoop`, `run_afc_sequence` | `test_afc.py::test_tracking_survives_a_drift_that_exceeds_the_static_capture_range` |
+| Kalman CFO/rate tracker | §6.4 | `afc.py::KalmanAFCLoop` | `test_afc.py::test_kalman_loop_converges_toward_repeated_measurement` |
+| Outlier-measurement divergence and its fix | §6.4 | `afc.py::AFCLoop.max_jump_hz`, `KalmanAFCLoop.innovation_gate` | `test_afc.py::test_afc_loop_gates_a_wild_outlier_measurement`, `test_kalman_loop_gates_a_wild_outlier_innovation` |
+| Tracking through a sign-reversing (UAV) Doppler | §6.4 | `afc.py::run_afc_sequence` | `test_afc.py::test_afc_tracks_through_a_doppler_sign_reversal`, `test_afc_fails_for_an_unrealistically_fast_doppler_reversal` |
 
 ## References
 
@@ -362,6 +438,11 @@ noise. Implementation: `nlfsc_lora/afc.py::AFCLoop`.
   *Proceedings of the IEEE*, 1969. (Hyperbolic/linear-period FM.)
 - Oppenheim, A. V., Schafer, R. W. *Discrete-Time Signal Processing*.
   (The discrete correlation theorem, §4.2 above.)
+- Murray, J. et al. "On the Doppler Bias of Hyperbolic Frequency Modulation
+  Matched Filter Time of Arrival Estimates." *IEEE Journal of Oceanic
+  Engineering*, 2019. (Closed-form Doppler/range bias for HFM matched
+  filtering — the sonar-literature counterpart to this project's own
+  Doppler-induced lag finding in §5.2 and §6.4.)
 
 See `DISSERTATION_OUTLINE.md` for how these results map onto a dissertation
 structure, and `README.md` for how to regenerate every figure referenced

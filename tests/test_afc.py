@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from nlfsc_lora.afc import AFCLoop, dual_edge_cfo_estimate, run_afc_sequence
+from nlfsc_lora.afc import AFCLoop, KalmanAFCLoop, dual_edge_cfo_estimate, run_afc_sequence
 from nlfsc_lora.channel import apply_cfo
 from nlfsc_lora.chirp import ChirpConfig, symbol_waveform
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
@@ -50,6 +50,54 @@ def test_afc_loop_ignores_untrusted_none_measurement():
     loop = AFCLoop(gain=0.3, cfo_tracked=123.0)
     result = loop.update(None)
     assert result == 123.0
+
+
+def test_afc_loop_gates_a_wild_outlier_measurement():
+    """Discovered by testing over long (thousands-of-bursts) sequences, not
+    assumed: dual_edge_cfo_estimate's mismatch check occasionally (~1 in 400,
+    measured directly) passes a measurement that is off by 1-4.5 kHz anyway.
+    Without a sanity gate, AFCLoop trusts it, jumps far outside
+    fft_correlation_demod's own capture range, and every subsequent decode
+    (and thus every subsequent measurement) is corrupted with no way back --
+    a run long enough to hit this even once effectively never recovers. The
+    gate should reject the single wild reading and keep tracking normally
+    once good measurements resume."""
+    loop = AFCLoop(gain=0.3, cfo_tracked=500.0, max_jump_hz=1200.0)
+    loop.update(510.0)  # ordinary small measurement: passes through
+    assert loop.cfo_tracked == pytest.approx(503.0, abs=0.5)
+
+    tracked_before_outlier = loop.cfo_tracked
+    loop.update(tracked_before_outlier - 5000.0)  # wild outlier: must be rejected
+    assert loop.cfo_tracked == pytest.approx(tracked_before_outlier, abs=0.5)
+
+    loop.update(tracked_before_outlier + 20.0)  # loop keeps tracking normally afterward
+    assert loop.cfo_tracked != pytest.approx(tracked_before_outlier, abs=0.001)
+
+
+def test_kalman_loop_converges_toward_repeated_measurement():
+    loop = KalmanAFCLoop()
+    for _ in range(50):
+        loop.update(500.0)
+    assert loop.cfo_tracked == pytest.approx(500.0, abs=5.0)
+
+
+def test_kalman_loop_ignores_untrusted_none_measurement():
+    loop = KalmanAFCLoop(cfo_tracked=123.0, rate_tracked=0.0)
+    result = loop.update(None)
+    # a None measurement is predict-only: with rate_tracked=0 the state shouldn't move
+    assert result == pytest.approx(123.0, abs=1e-9)
+
+
+def test_kalman_loop_gates_a_wild_outlier_innovation():
+    """The Kalman-native version of AFCLoop's max_jump_hz check: reject a
+    measurement whose innovation is implausible relative to the filter's own
+    predicted uncertainty, rather than absorbing it into the state estimate."""
+    loop = KalmanAFCLoop(cfo_tracked=500.0, rate_tracked=0.0)
+    for _ in range(10):
+        loop.update(500.0)  # let the filter converge and its uncertainty shrink
+    tracked_before_outlier = loop.cfo_tracked
+    loop.update(tracked_before_outlier + 50000.0)  # wild outlier
+    assert loop.cfo_tracked == pytest.approx(tracked_before_outlier, abs=5.0)
 
 
 def test_tracking_survives_a_drift_that_exceeds_the_static_capture_range():
@@ -101,3 +149,55 @@ def test_cold_start_beyond_capture_range_needs_acquisition():
 
     assert np.mean(decoded_with_acq == true_symbols) > 0.9
     assert np.mean(decoded_without_acq == true_symbols) < 0.5
+
+
+def _flyover_cfo(max_cfo: float, t0: float, half: int, n_bursts: int) -> np.ndarray:
+    """Constant-velocity closest-point-of-approach Doppler curve: an S-curve
+    saturating to +/-max_cfo far from t=0, crossing zero at t=0 -- a UAV or
+    drone approaching, passing near the receiver, then receding, unlike a
+    satellite pass's roughly-monotonic ramp. t0 (in burst units) sets how many
+    bursts the sign reversal takes; max_cfo/t0 is the instantaneous rate at
+    the steepest point, t=0."""
+    t = np.linspace(-half, half, n_bursts)
+    return -max_cfo * t / np.sqrt(t ** 2 + t0 ** 2)
+
+
+def test_afc_tracks_through_a_doppler_sign_reversal():
+    """The UAV case: unlike a satellite pass, Doppler here swings from positive
+    to negative within the same run. Measured directly (see
+    examples/output/19_afc_rate_of_change_limit.png), both trackers hold
+    decode accuracy near 1.0 once the instantaneous rate stays below roughly
+    55 Hz/burst -- itself many orders of magnitude past realistic UAV or
+    satellite Doppler acceleration. t0=90 here (max rate ~33 Hz/burst) is
+    comfortably inside that working region."""
+    cfg, dg = make_cfg()
+    max_cfo, t0, half = 3000.0, 90.0, 360
+    n_bursts = 2 * half
+    true_cfo = _flyover_cfo(max_cfo, t0, half, n_bursts)
+    rng = np.random.default_rng(7)
+    true_symbols = rng.integers(0, cfg.M, n_bursts)
+
+    dec_afc, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=0, loop=AFCLoop(gain=0.3))
+    dec_kal, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=0, loop=KalmanAFCLoop())
+
+    assert np.mean(dec_afc == true_symbols) > 0.95
+    assert np.mean(dec_kal == true_symbols) > 0.95
+
+
+def test_afc_fails_for_an_unrealistically_fast_doppler_reversal():
+    """Documents the real, discovered rate-of-change limit rather than implying
+    dual-edge tracking works at any speed: a reversal fast enough that the
+    per-burst CFO change alone (~200 Hz/burst here) exceeds what the tracker
+    can keep up with fails outright, for both trackers -- this is a genuine
+    physical limit, not the outlier-measurement bug max_jump_hz/innovation_gate
+    fix elsewhere in this file. See examples/output/19_afc_rate_of_change_limit.png
+    for where the cliff actually sits (~55 Hz/burst) relative to this."""
+    cfg, dg = make_cfg()
+    max_cfo, t0, half = 3000.0, 15.0, 150
+    n_bursts = 2 * half
+    true_cfo = _flyover_cfo(max_cfo, t0, half, n_bursts)
+    rng = np.random.default_rng(7)
+    true_symbols = rng.integers(0, cfg.M, n_bursts)
+
+    dec_afc, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=0, loop=AFCLoop(gain=0.3))
+    assert np.mean(dec_afc == true_symbols) < 0.7

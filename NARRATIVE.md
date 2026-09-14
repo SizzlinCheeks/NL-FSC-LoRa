@@ -574,6 +574,104 @@ drift moves past where it was originally acquired.
 
 ![Decode accuracy under a drifting CFO: dual-edge tracking vs. one-time static correction](pictures/12_dual_edge_afc.png)
 
+### 6.4 Pushing on it: a smarter tracker, and a Doppler that changes sign
+
+Two questions worth asking about a result like this rather than just
+accepting it: is the tracking loop itself as good as it can reasonably be,
+and does it hold up outside the one scenario it was demonstrated on? A
+satellite pass drifts the CFO in roughly one direction for the length of a
+burst sequence. A low-altitude UAV or drone passing near the receiver
+doesn't — it approaches (positive Doppler), crosses closest approach
+(Doppler through zero), then recedes (negative Doppler), all within the
+same pass.
+
+On the tracker itself: the exponential loop filter above only ever chases
+the latest measurement by a fixed fraction $\gamma$, which is exactly why
+it has that steady-state lag under a constant drift. A Kalman filter that
+tracks CFO *and* its rate jointly, predicting forward with the rate
+estimate every burst instead of only reacting to where the CFO already is,
+is the textbook fix for a lag like that — and it's also the standard
+approach in the carrier-tracking literature more broadly, used for exactly
+this kind of problem in GPS receivers and coherent optical communication
+links. Tested directly against the same drift as above:
+
+![Fixed-gain AFCLoop vs a constant-velocity Kalman filter on the same linear Doppler drift](pictures/17_kalman_vs_expfilter_ramp.png)
+
+A real but modest improvement, not a dramatic one — the exponential filter
+was already reasonably well-suited to a smooth, roughly-constant drift.
+Where the two trackers actually diverge is on the harder question: what
+happens when the drift itself reverses?
+
+Modeling a UAV flyover honestly takes the standard constant-velocity
+closest-point-of-approach Doppler curve — an S-curve that saturates to
+$\pm f_{d,\max}$ far from the pass and crosses zero smoothly at closest
+approach, steeper for a faster or lower pass:
+
+$$
+f_d(t) = -f_{d,\max} \cdot \frac{t}{\sqrt{t^2 + t_0^2}}
+$$
+
+Running that through the same two-edge measurement this chapter has used
+throughout — the instantaneous rate of change near the start and the end
+of each burst, exactly the "check both ends of the swept bandwidth"
+approach this whole tracking idea started from — turned up something
+worth being honest about: the very first version of this test, run over a
+long sequence, diverged completely partway through, and not near the sign
+reversal. Testing it down to the individual measurement found why:
+`dual_edge_cfo_estimate`'s own quality check occasionally — about 1 in
+400, measured directly — lets through a measurement that's wrong by
+1-4.5 kHz while still reporting a passing score. Over a couple hundred
+bursts that's unlikely to come up; over a few thousand (any realistic
+pass) it's close to certain to happen at least once, and without a second
+line of defense, one bad measurement was enough to permanently derail the
+loop for the rest of the run — the next decode fails because the residual
+now exceeds the decoder's own capture range, that failure corrupts the
+next measurement too, and there was nothing to break the cycle. Both
+trackers now gate outlier measurements before trusting them (`afc.py`'s
+`AFCLoop.max_jump_hz` and `KalmanAFCLoop.innovation_gate`), which fixes it
+directly. With that fix in place:
+
+![Dual-edge AFC through a full approach/closest-approach/recede Doppler reversal](pictures/18_uav_flyover_afc.png)
+
+Both trackers follow the reversal cleanly from one side to the other,
+while a receiver that only corrects once collapses the moment the drift
+carries it away from wherever it first acquired. The same rate-of-change
+measurement this project has used from the start does keep working
+through a sign change, not just a monotonic ramp.
+
+That still leaves a fair question: *how* fast a reversal can it follow? A
+receiver correcting with its own latest estimate needs that estimate to
+stay within the decoder's capture range every single burst — push the
+reversal fast enough and that stops being true. Sweeping the steepness of
+the flyover curve and plotting decode accuracy against the peak
+instantaneous rate at the sign crossing finds the actual cliff rather than
+guessing at one:
+
+![Decode accuracy vs. peak Doppler rate at the sign crossing, showing the real cliff and how far realistic rates sit from it](pictures/19_afc_rate_of_change_limit.png)
+
+Both trackers hold accuracy near 1.0 up to roughly 55 Hz per burst and
+collapse above roughly 100. At this configuration's symbol duration
+(~1.02 ms), 55 Hz/burst works out to about 54 kHz/s of Doppler
+*acceleration* — and real Doppler acceleration, for anything from a LEO
+satellite pass to a fast low-altitude drone, runs orders of magnitude
+below that. The cliff is real, found by testing rather than assumed away,
+but it isn't close to being the binding constraint for either scenario
+this chapter set out to check.
+
+None of this is a coincidence specific to LoRa. The literature on
+hyperbolic FM in sonar and radar has called it the "Doppler-tolerant"
+waveform for decades, and it comes with the same tradeoff this project
+found on its own in Chapter 5: Doppler insensitivity in the matched-filter
+response arrives together with a time/range bias, not for free — see
+Kroszczyński's original 1969 paper, and the more recent closed-form
+treatment of that bias in Murray et al.'s "On the Doppler Bias of
+Hyperbolic Frequency Modulation Matched Filter Time of Arrival Estimates"
+(*IEEE Journal of Oceanic Engineering*, 2019). That bias is the same
+underlying fact as Chapter 5's *lag*, showing up again under a different
+name in a different field — which is a reasonable amount of independent
+confirmation that HFM's Doppler behavior here isn't an artifact of this
+project's specific simulation.
+
 ---
 
 ## Where to go from here
