@@ -176,6 +176,14 @@ class AFCLoop:
                 self.cfo_tracked += self.gain * (cfo_measured - self.cfo_tracked)
         return self.cfo_tracked
 
+    def set_acquired(self, cfo: float) -> None:
+        """Seed the tracker with a trusted acquisition result -- full trust,
+        not blended in via `update`'s partial gain (that's what causes the
+        cold-start divergence the module docstring documents in the first
+        place). AFCLoop carries no other hidden state, so this is just the
+        assignment; KalmanAFCLoop overrides it to also reset its covariance."""
+        self.cfo_tracked = cfo
+
 
 @dataclass
 class KalmanAFCLoop:
@@ -244,6 +252,24 @@ class KalmanAFCLoop:
         self._P = P
         return self.cfo_tracked
 
+    def set_acquired(self, cfo: float) -> None:
+        """Seed the filter with a trusted acquisition result and correspondingly
+        reduced uncertainty, instead of leaving `_P` at its pre-acquisition
+        (near-infinite) default. Without this, the first few post-acquisition
+        measurements get absorbed with a near-total Kalman gain (P >> R), which
+        can drag the tracked value away from a good acquired estimate right at
+        the acquisition-to-tracking handoff -- discovered directly while
+        building an end-to-end packet test: KalmanAFCLoop's SER plateaued well
+        above AFCLoop's under otherwise-identical conditions until this was
+        fixed. CFO variance is set to `measurement_noise` itself (one
+        steady-state measurement's worth of uncertainty -- conservative, since
+        an acquisition combining several preamble bursts is usually better
+        than that); rate variance starts at a moderate, not-infinite prior
+        since acquisition carries no rate information at all."""
+        self.cfo_tracked = cfo
+        self.rate_tracked = 0.0
+        self._P = np.diag([self.measurement_noise, 100.0])
+
 
 def _combine_acquisition(results: Sequence[Tuple[int, float]]) -> float:
     """Combine several bursts' independent joint_cfo_symbol_search results into
@@ -305,7 +331,14 @@ def run_afc_sequence(
     `loop` lets the tracker itself be swapped in (e.g. a KalmanAFCLoop instead of
     the default AFCLoop(gain=gain)) without duplicating this whole pipeline; any
     object exposing a mutable `.cfo_tracked` attribute and an `.update(measurement)`
-    method works. Defaults to `AFCLoop(gain=gain)`, matching prior behavior exactly.
+    method works, and one optionally implementing `.set_acquired(cfo)` gets it
+    called once at the end of acquisition instead of `.cfo_tracked` being poked
+    directly -- AFCLoop's version is a plain assignment, but a loop carrying
+    hidden state beyond cfo_tracked (KalmanAFCLoop's covariance) needs the
+    chance to reset that state too, not just the visible estimate; skipping
+    this for Kalman was a real bug, not a hypothetical one (see
+    KalmanAFCLoop.set_acquired's docstring). Defaults to `AFCLoop(gain=gain)`,
+    matching prior behavior exactly.
 
     Returns three arrays of length len(true_symbols): decoded symbols, the tracked
     CFO estimate *before* each burst was corrected (what the receiver actually used),
@@ -333,7 +366,11 @@ def run_afc_sequence(
             decoded[i] = m_hat
             acquire_results.append((m_hat, cfo_hat))
             if i == acquire_bursts - 1:
-                loop.cfo_tracked = _combine_acquisition(acquire_results)
+                acquired_cfo = _combine_acquisition(acquire_results)
+                if hasattr(loop, "set_acquired"):
+                    loop.set_acquired(acquired_cfo)
+                else:
+                    loop.cfo_tracked = acquired_cfo
             continue
 
         rx_corrected = correct_cfo(rx, cfo_tracked, cfg.sample_rate)

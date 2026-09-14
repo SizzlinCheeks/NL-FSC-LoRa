@@ -179,6 +179,28 @@ def test_multi_burst_acquisition_beats_single_burst_at_low_snr():
     assert errs_multi < errs_single
 
 
+def test_kalman_set_acquired_resets_covariance_not_just_cfo():
+    """A real bug, found by comparing AFCLoop and KalmanAFCLoop on an otherwise
+    identical multi-burst-acquisition packet test: KalmanAFCLoop's SER
+    plateaued well above AFCLoop's at every SNR. Cause: acquisition used to
+    poke `loop.cfo_tracked` directly, which for KalmanAFCLoop leaves `_P` at
+    its pre-acquisition (near-infinite) default -- so even after a confident
+    acquisition, the filter still thinks it knows nothing, and the first
+    post-acquisition measurement gets absorbed with a near-total Kalman gain
+    (P >> R), able to drag the tracked value away from a good acquired
+    estimate. set_acquired must shrink _P along with setting cfo_tracked, or
+    a single noisy post-acquisition measurement can swing the estimate by
+    something on the order of its own full magnitude."""
+    loop = KalmanAFCLoop()
+    loop.set_acquired(6000.0)
+    p_cfo_after_acquire = loop._P[0, 0]
+    assert p_cfo_after_acquire < 1.0e6, "covariance must shrink on acquisition, not stay near its 1e8 default"
+
+    loop.update(6100.0)  # one ordinary-sized post-acquisition measurement
+    assert loop.cfo_tracked == pytest.approx(6000.0, abs=500.0), \
+        "a single normal measurement right after acquisition shouldn't swing the estimate by ~its own value"
+
+
 def _flyover_cfo(max_cfo: float, t0: float, half: int, n_bursts: int) -> np.ndarray:
     """Constant-velocity closest-point-of-approach Doppler curve: an S-curve
     saturating to +/-max_cfo far from t=0, crossing zero at t=0 -- a UAV or
