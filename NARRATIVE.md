@@ -730,6 +730,119 @@ project's specific simulation.
 
 ---
 
+## 7. Putting It All Together: An End-to-End Packet Test
+
+Everything so far has been checked symbol by symbol, or burst by burst in
+isolation. A real receiver has to do all of it at once: recognize a
+packet, decode a payload correctly, and if there's Doppler, track it
+through the whole thing. Three tests, each harder than the last, all at
+SF=7 and 500 kHz bandwidth — a bandwidth this project hadn't used before
+(everything earlier used 125 kHz).
+
+The packet itself is a simplified stand-in for real LoRa framing: a short
+preamble of repeated base ($m=0$) symbols, then a random payload —
+the same idea as LoRa's own preamble up-chirps, generalized to any
+trajectory shape, not a bit-accurate reproduction of the real sync-word
+convention (which doesn't bear on the trajectory-shape question this
+project is actually about).
+
+### 7.1 No Doppler at all
+
+Send the preamble, then a random payload, decode it, repeat. At high SNR
+every payload symbol comes back correct, every time — 200 packets,
+6000 payload symbols, zero errors. Dropping the SNR reproduces the same
+waterfall shape established back in Chapter 4:
+
+![Payload symbol error rate vs. SNR for all three packet tests](pictures/20_packet_level_validation.png)
+
+*(Left panel.)* Nothing new here mathematically — it's the same decoder as
+always — but it confirms the whole pipeline (preamble, payload framing,
+grading only the payload) behaves the way the isolated single-symbol tests
+predicted it would.
+
+### 7.2 A constant Doppler shift, acquired from the preamble
+
+Add a constant 6 kHz offset — comfortably past this configuration's
+half-bin tolerance of about 1953 Hz — across the whole packet, and let the
+receiver actually earn its correction instead of being handed the answer:
+acquire the CFO from the preamble (`sync.py`'s `joint_cfo_symbol_search`),
+then hold it with the tracking loop through the payload.
+
+Building this test surfaced something worth knowing: acquisition itself
+is less SNR-robust than ordinary decoding. Searching many candidate CFOs
+against one noisy burst gives more chances for a noise-induced false peak
+than deciding among a single burst's own $M$ symbol hypotheses does —
+measured directly, a single acquisition burst had a 27% symbol error rate
+at −15 dB SNR where plain decoding had 0%. The fix is exactly what a
+multi-symbol preamble is *for*: run acquisition independently across
+several preamble bursts and combine them (majority-vote the decoded
+symbol, then take the median CFO among bursts agreeing with it) instead
+of trusting one. Measured directly, that dropped the 27% error rate to 0%.
+`afc.py`'s `run_afc_sequence` now takes an `acquire_bursts` argument for
+exactly this.
+
+*(Middle panel.)* With that fix, `AFCLoop` and `KalmanAFCLoop` land right
+on top of each other — both acquire from the preamble and hold the offset
+through the payload equally well.
+
+Getting the two trackers to agree here also caught a real bug worth being
+honest about. The first version of this test had `KalmanAFCLoop`
+performing noticeably worse than `AFCLoop` — its SER plateaued well above
+`AFCLoop`'s at every SNR, on a scenario both had handled equally well
+before. The cause: acquisition used to hand the tracker its result by
+directly setting `.cfo_tracked`, which is `AFCLoop`'s entire state, so
+that's correct for it — but `KalmanAFCLoop` also carries a covariance
+matrix describing how *confident* it is, and setting `.cfo_tracked`
+directly left that covariance at its pre-acquisition, near-infinite
+default. So even right after a confident, preamble-averaged acquisition,
+the filter still behaved as if it knew nothing, and the first
+post-acquisition measurement got absorbed with a near-total Kalman gain —
+enough to drag the estimate away from a good acquired value. The fix,
+`KalmanAFCLoop.set_acquired`, resets the covariance along with the
+estimate.
+
+### 7.3 A Doppler that reverses sign
+
+The harder case: a UAV-style approach/closest-approach/recede curve
+across the packet, the same model as Chapter 6's flyover test. A sign
+reversal needs enough bursts to unfold slowly enough to stay trackable, so
+this packet's payload (712 symbols) is much longer than the other two
+tests' — not an arbitrary change, but a consequence of the Doppler
+profile's own timescale, using the same $t_0=90$ (peak rate about
+33 Hz/burst) already validated safe in Chapter 6, at SNR = 10 dB.
+
+*(Right panel.)* That word "at" is doing real work. The first version of
+this test reused tests 1–2's SNR range and got a flat, unmoving ~55%
+error rate at every point in it — not the smooth waterfall the other two
+panels show. Tracing one failing run found why: the first ~300 payload
+symbols decoded perfectly, then accuracy dropped to exactly 0% right
+around the reversal's steepest point and never recovered for the rest of
+the packet. A deterministic loss of lock, not noise accumulating
+gradually.
+
+That points at something Chapter 6's own rate-of-change figure didn't
+cover: the cliff there (`19_afc_rate_of_change_limit.png`) was
+characterized at one SNR, 10 dB. A noisier dual-edge measurement makes any
+given rate harder to track, so the safe-rate ceiling itself drops as SNR
+drops — and 33 Hz/burst, safely under that ceiling at 10 dB, stops being
+safe somewhere around 6–8 dB. Sweeping the actual transition instead of
+tests 1–2's lower range shows it directly: a hard floor near 55–65% error
+from −2 dB up through about 6 dB, then a sharp drop to near-zero by
+8–10 dB — `AFCLoop` clearing it a couple dB before `KalmanAFCLoop` does.
+Nothing here contradicts Chapter 6's result; it sharpens it. "Safely under
+the cliff" was always conditional on the SNR the cliff was measured at,
+and now that condition is explicit instead of implicit.
+
+None of this changes the answer to the actual question this chapter set
+out to check: given enough SNR margin for the Doppler rate involved
+(which every realistic satellite or UAV scenario has, by the enormous
+margin Chapter 6 already established), the same dual-edge measurement
+this whole project has used from Chapter 1 onward does decode a real
+packet correctly, straight through a Doppler sign reversal, not just a
+one-directional drift.
+
+---
+
 ## Where to go from here
 
 - `PAPER.md` — the same results with every proof given in full, organized

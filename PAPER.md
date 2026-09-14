@@ -413,6 +413,69 @@ Implementation: `nlfsc_lora/afc.py::KalmanAFCLoop`, `AFCLoop.max_jump_hz`,
 
 ---
 
+## 7. End-to-end validation: a packet test
+
+Every result above was checked per symbol or per burst. A receiver has to
+combine all of it at once: recognize a packet, decode the payload, and,
+under Doppler, acquire and track through the whole thing. Three tests
+(`examples/packet_experiments.py`), SF=7, BW=500 kHz — untested elsewhere
+in this project, which otherwise uses 125 kHz — each sending a simplified
+preamble (`N_PREAMBLE` copies of the base $m=0$ symbol, standing in for
+LoRa's own preamble up-chirps, not a bit-accurate sync-word/SFD
+reproduction) followed by a random payload, graded only on the payload.
+
+**7.1 No Doppler.** Baseline: 200 packets, 6000 payload symbols, zero
+errors at 40 dB SNR; the SER-vs-SNR sweep reproduces §4's waterfall shape.
+
+**7.2 Constant CFO, acquired from the preamble.** A 6 kHz offset (past
+this configuration's half-bin tolerance, $\approx 1953$ Hz) is acquired
+via `sync.py::joint_cfo_symbol_search` on the preamble and held through
+the payload by the tracking loop. Two findings, both from testing rather
+than assumed:
+
+- *Acquisition needs more SNR margin than decoding.* Searching many CFO
+  candidates against one noisy burst gives more chances for a
+  noise-induced false peak than a single $M$-ary decode does — measured,
+  27% single-burst acquisition symbol error at $-15$ dB SNR versus 0% for
+  plain decoding. `run_afc_sequence(..., acquire_bursts=N)` runs
+  acquisition independently across the first $N$ preamble bursts and
+  combines them (majority-vote the decoded symbol, median CFO among
+  bursts agreeing with it) instead of trusting one; measured, $N=8$
+  reduced that 27% to 0%.
+- *`KalmanAFCLoop` needs its covariance reset on acquisition, not just its
+  point estimate.* Handing acquisition's result to the tracker via direct
+  assignment (`loop.cfo_tracked = ...`) is correct for `AFCLoop`, whose
+  entire state is that one number, but leaves `KalmanAFCLoop`'s covariance
+  at its pre-acquisition, near-infinite default — so even after a
+  confident acquisition the filter still behaves as if uninformed, and the
+  first post-acquisition measurement is absorbed with a near-total Kalman
+  gain, able to drag the estimate off a good value. `KalmanAFCLoop.set_acquired`
+  fixes this by resetting covariance alongside the point estimate; with it,
+  `AFCLoop` and `KalmanAFCLoop` track identically on this test.
+
+**7.3 A sign-reversing (UAV-style) Doppler.** Same closest-point-of-approach
+curve as §6.4, $t_0=90$ (peak rate $\approx 33$ Hz/burst), previously
+validated safe at SNR $=10$ dB. Reusing §7.1–7.2's lower SNR range here
+produced a flat $\approx 55\%$ error rate at every point tested — not a
+waterfall. Root cause, found by tracing one failing run: the first
+$\approx 300$ payload symbols decode correctly, then accuracy drops to
+exactly 0% at the reversal's steepest point and never recovers — a
+deterministic loss of lock, not accumulating noise. This sharpens §6.4's
+rate-of-change cliff rather than contradicting it: that cliff was
+characterized at one SNR (10 dB), and a noisier dual-edge measurement
+makes any given rate harder to track, so the safe-rate ceiling itself
+falls as SNR falls. Sweeping the actual transition (`examples/output/
+20_packet_level_validation.png`, right panel) shows a hard floor from
+$-2$ to $\approx 6$ dB, then a sharp drop to near-zero by $8$–$10$ dB,
+`AFCLoop` clearing it a couple dB before `KalmanAFCLoop`.
+
+Implementation: `examples/packet_experiments.py`; `nlfsc_lora/afc.py::run_afc_sequence`
+(`acquire_bursts`), `AFCLoop.set_acquired`, `KalmanAFCLoop.set_acquired`.
+Tests: `tests/test_afc.py::test_multi_burst_acquisition_beats_single_burst_at_low_snr`,
+`test_kalman_set_acquired_resets_covariance_not_just_cfo`.
+
+---
+
 ## Summary
 
 | Result | Section | Code | Test |
@@ -427,6 +490,9 @@ Implementation: `nlfsc_lora/afc.py::KalmanAFCLoop`, `AFCLoop.max_jump_hz`,
 | Kalman CFO/rate tracker | §6.4 | `afc.py::KalmanAFCLoop` | `test_afc.py::test_kalman_loop_converges_toward_repeated_measurement` |
 | Outlier-measurement divergence and its fix | §6.4 | `afc.py::AFCLoop.max_jump_hz`, `KalmanAFCLoop.innovation_gate` | `test_afc.py::test_afc_loop_gates_a_wild_outlier_measurement`, `test_kalman_loop_gates_a_wild_outlier_innovation` |
 | Tracking through a sign-reversing (UAV) Doppler | §6.4 | `afc.py::run_afc_sequence` | `test_afc.py::test_afc_tracks_through_a_doppler_sign_reversal`, `test_afc_fails_for_an_unrealistically_fast_doppler_reversal` |
+| Multi-burst acquisition (preamble averaging) | §7.2 | `afc.py::run_afc_sequence` (`acquire_bursts`) | `test_afc.py::test_multi_burst_acquisition_beats_single_burst_at_low_snr` |
+| Kalman acquisition-covariance fix | §7.2 | `afc.py::KalmanAFCLoop.set_acquired` | `test_afc.py::test_kalman_set_acquired_resets_covariance_not_just_cfo` |
+| End-to-end packet decode under Doppler | §7 | `examples/packet_experiments.py` | (SER-vs-SNR sweeps; no dedicated pytest, see script's own correctness assertions) |
 
 ## References
 

@@ -406,6 +406,53 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   of Doppler acceleration, several orders of magnitude past any physically
   realistic satellite or UAV scenario.
 
+## End-to-end packet test
+
+Everything above is checked per symbol or per burst. `examples/packet_experiments.py`
+combines it into an actual packet: a simplified preamble (`N_PREAMBLE`
+copies of the base `m=0` symbol -- the same idea as LoRa's own preamble
+up-chirps, not a bit-accurate sync-word/SFD reproduction) followed by a
+random payload, decoded and graded only on the payload. Three tests at
+SF=7, BW=500 kHz -- a bandwidth this project hadn't used elsewhere (125
+kHz everywhere above) -- each with a noiseless correctness check first,
+then an SER-vs-SNR sweep:
+
+- **`20_packet_level_validation.png`**, left panel, no CFO/Doppler:
+  reproduces `14`'s waterfall shape in a full packet context, confirming
+  the preamble/payload framing itself doesn't change anything.
+- Middle panel, a constant 6 kHz CFO (past this configuration's ~1953 Hz
+  half-bin tolerance) acquired from the preamble and held through the
+  payload. Building this surfaced two real, fixed issues: (1) acquisition
+  itself needs more SNR margin than plain decoding -- searching many CFO
+  candidates against one noisy burst gives more chances for a false peak
+  (measured: 27% single-burst acquisition error at -15dB where plain
+  decoding had 0%), fixed by `run_afc_sequence(..., acquire_bursts=N)`,
+  which majority-votes acquisition across `N` preamble bursts instead of
+  trusting one (27% -> 0%, measured); and (2) `KalmanAFCLoop` needs its
+  covariance reset on acquisition, not just its point estimate -- handing
+  the acquired CFO to the tracker via direct assignment left the Kalman
+  filter's covariance at its near-infinite pre-acquisition default, so the
+  first post-acquisition measurement got absorbed with a near-total gain,
+  able to drag the estimate off a good value. `KalmanAFCLoop.set_acquired`
+  fixes this; with both fixes, `AFCLoop` and `KalmanAFCLoop` track
+  identically here.
+- Right panel, a UAV-style sign-reversing Doppler (same
+  closest-point-of-approach curve as `18`/`19`, previously validated safe
+  at SNR=10dB). Reusing the other two tests' lower SNR range here produced
+  a flat ~55% error rate at *every* SNR tested -- not a waterfall. Tracing
+  one failing run found why: the first ~300 payload symbols decode
+  correctly, then accuracy drops to exactly 0% right at the reversal's
+  steepest point and never recovers -- a deterministic loss of lock, not
+  accumulating noise. This sharpens `19`'s rate-of-change cliff rather than
+  contradicting it: that cliff was measured at one SNR (10dB), and a
+  noisier dual-edge measurement makes any given rate harder to track, so
+  the safe-rate ceiling itself falls as SNR falls. Sweeping the actual
+  transition shows a hard floor from -2dB to ~6dB, then a sharp drop to
+  near-zero by 8-10dB, `AFCLoop` clearing it a couple dB before
+  `KalmanAFCLoop`.
+
+Run with `python examples/packet_experiments.py`.
+
 ## Extending it
 
 Adding a new trajectory is one function: `g(u)` on `[0, 1]` with `g(0)=0`,
