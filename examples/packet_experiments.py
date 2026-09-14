@@ -175,7 +175,25 @@ def test3_uav_doppler():
     reversal to unfold slowly enough to stay trackable -- max_cfo/t0 must stay
     well under the ~55 Hz/burst cliff from 19_afc_rate_of_change_limit.png --
     so this test's payload is much longer than tests 1-2's, not an arbitrary
-    change: the same t0=90 (peak rate ~33 Hz/burst) already validated safe."""
+    change: the same t0=90 (peak rate ~33 Hz/burst) already validated safe --
+    at SNR=10dB.
+
+    That cliff turns out to be SNR-dependent, discovered directly rather than
+    assumed: at this same t0=90, sweeping SNR from -10dB up to 10dB found
+    accuracy pinned at a hard floor (~55% payload symbol errors) for
+    everything below roughly 6dB, then resolving to perfect by 10dB -- not a
+    smooth waterfall like tests 1-2's. Tracing one failing run showed why: the
+    first ~300 payload symbols decode perfectly, then accuracy drops to
+    exactly 0% right around the reversal's steepest point and never recovers
+    for the rest of the packet -- a deterministic loss of lock, not noise
+    accumulating gradually. The ~55 Hz/burst cliff in
+    19_afc_rate_of_change_limit.png was characterized at a single SNR (10dB);
+    a noisier dual-edge measurement makes any given rate harder to track, so
+    the true safe-rate ceiling drops as SNR drops, and 33 Hz/burst -- safely
+    inside that ceiling at 10dB -- stops being safe below roughly 6-8dB here.
+    The SNR range below sweeps across that transition rather than the lower
+    range tests 1-2 use, so it actually shows the shape of it instead of
+    landing entirely on one side."""
     print("\n=== Test 3: UAV-style (sign-reversing) Doppler ===")
     cfg, dg = make_cfg("hyperbolic")
     max_cfo, t0 = 3000.0, 90.0
@@ -199,7 +217,7 @@ def test3_uav_doppler():
               f"out of {n_trials_check * n_payload} across {n_trials_check} packets")
         assert total_errors == 0, f"Test 3 baseline should decode correctly with {name}"
 
-    snr_range = np.arange(-28, -8, 3)
+    snr_range = np.arange(-2, 14, 2)  # spans the discovered lock-loss transition (~6-10dB), not tests 1-2's range
     n_trials = 20
     results = {}
     for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop())]:
