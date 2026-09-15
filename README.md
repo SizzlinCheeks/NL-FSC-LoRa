@@ -527,6 +527,16 @@ rather than duplicated here:
   This project's mechanism works only because a LoRa symbol carries a
   decodable payload a sonar ping doesn't -- see NARRATIVE.md's "How Real
   HFM Sonar and Radar Systems Actually Handle Doppler" / PAPER.md §9.
+- **Building the real thing.** The paired opposite-sweep idea above was
+  then actually implemented (`nlfsc_lora/paired_sweep.py`) and tested
+  against this project's own hyperbolic trajectory --
+  `21_paired_sweep_doppler_correction.png` -- including a first attempt
+  that didn't work (applying it directly to an arbitrary payload symbol's
+  cyclic shift, which has a real, characterized shift-dependent bias) and
+  the fix that did (applying it to a known preamble and correcting
+  payload bursts afterward, the way real systems actually use it). See
+  NARRATIVE.md's "Building the Same Thing: Paired-Sweep Doppler
+  Correction" / PAPER.md §10.
 
 ## Extending it
 

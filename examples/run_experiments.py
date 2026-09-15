@@ -42,6 +42,9 @@ g(t/T). Produces PNGs under examples/output/:
   19_afc_rate_of_change_limit.png - decode accuracy vs peak Doppler rate at the sign
                                     crossing: where dual-edge tracking actually breaks,
                                     and how far that is from any realistic UAV/satellite rate
+  21_paired_sweep_doppler_correction.png - SER vs Doppler scale, uncorrected vs a real
+                                    active-sonar-style (DHFM) paired opposite-sweep
+                                    preamble correction (nlfsc_lora.paired_sweep)
 
 Run with: python examples/run_experiments.py
 """
@@ -54,12 +57,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from nlfsc_lora.afc import AFCLoop, KalmanAFCLoop, run_afc_sequence
-from nlfsc_lora.channel import awgn
+from nlfsc_lora.channel import apply_doppler_scale, awgn
 from nlfsc_lora.chirp import ChirpConfig, base_frequency, base_waveform, symbol_waveform
 from nlfsc_lora.doppler import doppler_scale_response
 from nlfsc_lora.local_rate import local_rate_demod, local_rate_ser_vs_snr
 from nlfsc_lora.metrics import autocorrelation, instantaneous_chirp_rate
-from nlfsc_lora.receiver import dechirp, fft_demod, matched_filter_bank_demod
+from nlfsc_lora.paired_sweep import acquire_doppler_scale, correct_doppler_scale, reversed_trajectory
+from nlfsc_lora.receiver import dechirp, fft_correlation_demod, fft_demod, matched_filter_bank_demod
 from nlfsc_lora.simulate import ser_vs_cfo, ser_vs_doppler_scale, ser_vs_model_mismatch, ser_vs_snr, ser_vs_timing_offset
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
@@ -779,6 +783,67 @@ def plot_afc_rate_of_change_limit():
     plt.close(fig)
 
 
+def plot_paired_sweep_doppler_correction():
+    """08_lora_ser_vs_doppler_scale.png's own finding was that HFM's matched-
+    filter Doppler tolerance (07) doesn't survive full M-ary decoding: the
+    Doppler-scale-induced lag bias corrupts the decoded symbol directly, so
+    SER collapses past roughly the same half-bin threshold every trajectory
+    shares. Chapter "How Real HFM Sonar and Radar Systems Actually Handle
+    Doppler" asks whether real active sonar's own fix for the analogous
+    problem -- transmitting a pair of oppositely-swept pulses and comparing
+    their (oppositely-biased) delay estimates (DHFM, Wang et al. 2017) --
+    actually fixes this here too. It does, once applied the way real systems
+    actually apply it: to a known (m=0) preamble pair, not to an arbitrary
+    payload symbol's own cyclic shift directly (the first version of this
+    tried the latter and found a real, shift-dependent residual bias from the
+    cyclic-shift wrap discontinuity -- see paired_sweep.py's module
+    docstring). Acquiring alpha once from a preamble pair and correcting
+    every payload burst with it (nlfsc_lora.paired_sweep) before an ordinary
+    single-sweep decode restores full accuracy across the same alpha range
+    that leaves an uncorrected receiver at ~100% SER.
+    """
+    q = 1.0 / 3.0
+    g_up, _ = TRAJECTORIES["hyperbolic"]
+    g_down = reversed_trajectory(g_up)
+    f_center = hyperbolic_center_freq(BANDWIDTH, q)
+    cfg_up = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g_up, f_center=f_center)
+    cfg_down = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g_down, f_center=f_center)
+
+    alpha_range = np.linspace(0.85, 1.15, 21)
+    snr_db = 10.0
+    n_trials = 300
+    ser_uncorrected = np.empty(len(alpha_range))
+    ser_corrected = np.empty(len(alpha_range))
+    for i, alpha in enumerate(alpha_range):
+        rng = np.random.default_rng(i)
+        rx_pre_up = awgn(apply_doppler_scale(base_waveform(cfg_up), alpha), snr_db, rng)
+        rx_pre_down = awgn(apply_doppler_scale(base_waveform(cfg_down), alpha), snr_db, rng)
+        alpha_hat = acquire_doppler_scale(rx_pre_up, rx_pre_down, cfg_up, cfg_down, q)
+
+        errs_u, errs_c = 0, 0
+        for _ in range(n_trials):
+            m_true = int(rng.integers(0, cfg_up.M))
+            rx = awgn(apply_doppler_scale(symbol_waveform(cfg_up, m_true), alpha), snr_db, rng)
+            if fft_correlation_demod(rx, cfg_up) != m_true:
+                errs_u += 1
+            if fft_correlation_demod(correct_doppler_scale(rx, alpha_hat), cfg_up) != m_true:
+                errs_c += 1
+        ser_uncorrected[i] = errs_u / n_trials
+        ser_corrected[i] = errs_c / n_trials
+
+    floor = 1.0 / n_trials
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(alpha_range, np.maximum(ser_uncorrected, floor), marker="o", ms=4, label="uncorrected (single sweep)")
+    ax.plot(alpha_range, np.maximum(ser_corrected, floor), marker="o", ms=4,
+            label="paired-sweep acquired + corrected")
+    ax.set(xlabel="Doppler time-scale factor (alpha)", ylabel="symbol error rate", yscale="log",
+           title=f"DHFM-style paired-sweep Doppler correction (SNR={snr_db:.0f}dB, {n_trials} symbols/point)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "21_paired_sweep_doppler_correction.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -800,6 +865,7 @@ def main():
     plot_kalman_vs_expfilter_ramp()
     plot_uav_flyover_afc()
     plot_afc_rate_of_change_limit()
+    plot_paired_sweep_doppler_correction()
     print(f"Wrote figures to {OUT_DIR}")
 
 

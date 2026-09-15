@@ -586,6 +586,7 @@ Tests: `tests/test_afc.py::test_multi_burst_acquisition_beats_single_burst_at_lo
 | Multi-burst acquisition (preamble averaging) | §7.2 | `afc.py::run_afc_sequence` (`acquire_bursts`) | `test_afc.py::test_multi_burst_acquisition_beats_single_burst_at_low_snr` |
 | Kalman acquisition-covariance fix | §7.2 | `afc.py::KalmanAFCLoop.set_acquired` | `test_afc.py::test_kalman_set_acquired_resets_covariance_not_just_cfo` |
 | End-to-end packet decode under Doppler | §7 | `examples/packet_experiments.py` | (SER-vs-SNR sweeps; no dedicated pytest, see script's own correctness assertions) |
+| DHFM-style paired-sweep Doppler correction | §10 | `nlfsc_lora/paired_sweep.py` | `tests/test_paired_sweep.py::test_acquire_and_correct_recovers_full_decode_accuracy_across_full_m_range` |
 
 ## 8. Comparison with standard LoRa, and when this applies
 
@@ -706,6 +707,75 @@ per-symbol decodable payload, solving the analogous problem (recovering
 usable timing/frequency information from a Doppler-affected nonlinear-FM
 signal) by a different route than the paired-pulse, replica-based
 approach real active sonar and radar systems use.
+
+---
+
+## 10. Building the same thing: paired-sweep Doppler correction
+
+Rather than leave §9 as a paper comparison, the paired opposite-sweep
+(DHFM) idea was implemented and tested against this project's own
+hyperbolic trajectory (`nlfsc_lora/paired_sweep.py`).
+
+**Construction.** The down-sweep is the up-sweep's own shape traversed
+*backward in time*, $g_{\text{down}}(u) = g(1-u)$, not its frequency axis
+flipped ($1-g(u)$) — the latter was tried first and found, directly, to
+badly degrade HFM's own Doppler tolerance (peak preservation
+$\approx 0.2$–$0.5$ versus $\approx 0.9$+). For a linear chirp the two
+constructions coincide, which is why the distinction is easy to miss
+outside a genuinely curved trajectory.
+
+**The bias relationship.** Applying §5.2's exact self-similarity theorem
+to the time-reversed law gives a closed form for the down-sweep's own
+Doppler-induced lag bias:
+
+$$
+\Delta_{\text{down}}(\alpha) = -q \cdot \Delta_{\text{up}}(\alpha), \qquad q = f_{\text{low}}/f_{\text{high}}
+$$
+
+not a naive equal-and-opposite pair (that is only exact in the
+degenerate zero-bandwidth limit $q \to 1$); confirmed directly against
+simulated correlation-peak lags to within about one sample across
+$\alpha \in [0.85, 1.15]$. Two lag measurements and two unknowns (true
+shift, bias) is exactly DHFM's own two-equations-two-unknowns structure,
+solved here in closed form
+($\hat{\text{shift}} = (q \cdot \text{lag}_{\text{up}} + \text{lag}_{\text{down}})/(1+q)$,
+implemented as `combine_paired_lags`) rather than fit.
+
+**A first attempt that failed, and why.** Applying this formula directly
+to an arbitrary payload symbol's own cyclic shift (both directions
+carrying the same shifted symbol) does not work: measured directly,
+decode error is negligible near $m=0$ and grows to tens of samples by
+mid-alphabet, a clear systematic (not noise) pattern. Cause: a
+cyclically-shifted symbol carries its own wrap discontinuity, and
+`channel.py::apply_doppler_scale`'s window-origin-anchored resampling of
+an already-wrapped array introduces a shift-dependent bias term the
+$\Delta(\alpha)$ formula (derived for an unshifted, unwrapped trajectory)
+does not model.
+
+**The fix: apply it the way real systems actually do.** Neither DHFM
+sonar nor standard LoRa's own up/down-chirp trick ever decodes an
+arbitrary payload value from a paired measurement directly — both
+measure a channel parameter once from a *known, unshifted* reference,
+then correct ordinary data before decoding it normally. The same pattern
+here (`acquire_doppler_scale` on a paired $m=0$ preamble, then
+`correct_doppler_scale` applied to each payload burst before an ordinary
+single-sweep decode) sidesteps the wrap-discontinuity problem entirely
+and is exact, not approximate: measured directly, symbol error stays
+pinned at the trial-count noise floor across the full $\alpha \in
+[0.85, 1.15]$ sweep at 10 dB SNR, where an uncorrected receiver is at
+$\approx 100\%$ error outside a narrow band around $\alpha=1$
+(`examples/output/21_paired_sweep_doppler_correction.png`, reproducing
+§8's own half-bin-sensitivity finding for the uncorrected case). The
+$\alpha$ estimate itself is accurate to a few parts in $10^4$ at 10 dB
+and stays accurate to a fraction of a percent down to $-10$ dB SNR — the
+same full-symbol coherent gain that fixed `full_symbol_cfo_estimate`'s
+own noise floor (§6.5) applies here too, for the same reason
+(`raw_lag_estimate` correlates the whole symbol, not a small window).
+
+Implementation: `nlfsc_lora/paired_sweep.py` (`reversed_trajectory`,
+`raw_lag_estimate`, `combine_paired_lags`, `doppler_scale_from_bias`,
+`acquire_doppler_scale`, `correct_doppler_scale`, `paired_sweep_decode`).
+Tests: `tests/test_paired_sweep.py`.
 
 ---
 

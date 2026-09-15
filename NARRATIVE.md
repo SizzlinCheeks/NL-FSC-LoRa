@@ -1077,6 +1077,97 @@ pulses and cross-ping tracking instead.
 
 ---
 
+## Building the Same Thing: Paired-Sweep Doppler Correction
+
+Worth actually trying rather than leaving as a paper comparison: does real
+active sonar's own DHFM trick — transmit a pair of oppositely-swept
+pulses, compare their two oppositely-biased delay estimates — work here
+too, adapted to this project's own hyperbolic trajectory?
+
+**Building the down-sweep.** The "down" sweep isn't the up-sweep's
+frequency axis flipped ($1-g(u)$) — tried first, and it degrades badly,
+losing most of HFM's own Doppler tolerance (peak preservation down
+around 0.2–0.5 instead of 0.9+). It's the same shape traversed
+*backward in time*: $g_{\text{down}}(u) = g(1-u)$. For a plain linear
+chirp the two constructions happen to coincide, which is exactly why
+this distinction is easy to miss — it only shows up once the trajectory
+is actually curved.
+
+**The bias relationship, derived and then checked.** Chapter 5.2 already
+gives the exact Doppler-induced lag for the up-sweep,
+$\Delta_{\text{up}}(\alpha)$. Applying the same theorem to the
+time-reversed law gives a closed form for the down-sweep's own bias:
+
+$$
+\Delta_{\text{down}}(\alpha) = -q \cdot \Delta_{\text{up}}(\alpha)
+$$
+
+where $q = f_{\text{low}}/f_{\text{high}}$ — the same band-ratio parameter
+that already sets the hyperbolic law's shape. Not a naive equal-and-
+opposite pair (that only holds in the degenerate case where the sweep
+spans no bandwidth at all); the down sweep's bias is $q$ times smaller,
+because $q$ governs how much of the hyperbola's curvature falls on each
+half of the band. Checked directly against simulated correlation-peak
+lags rather than just trusted: predicted and measured lags agreed to
+within about one sample across a wide range of $\alpha$.
+
+Two lag measurements, two unknowns (the true shift and the bias) — the
+same two-equations-two-unknowns structure DHFM sonar exploits, solved by
+simple substitution once the $q$-weighting is known:
+
+$$
+\widehat{\text{shift}} = \frac{q \cdot \text{lag}_{\text{up}} + \text{lag}_{\text{down}}}{1+q}
+$$
+
+**The first attempt, and why it didn't work.** The obvious thing to try
+first: send an arbitrary *payload* symbol as both an up- and a
+down-sweep burst, and decode the pair directly with this formula. That
+doesn't work — checked directly, not assumed: decode error stays near
+zero for symbols close to $m=0$ and grows to tens of samples' worth of
+error by mid-alphabet, a clear systematic pattern, not noise. The cause:
+a cyclically-shifted symbol carries its own wrap discontinuity
+(Chapter 6.2's "wrap glitch"), and the way this project's Doppler-scale
+model resamples an already-shifted, already-wrapped array introduces an
+extra bias that depends on the shift itself — something the clean
+$\Delta(\alpha)$ formula, derived for an unshifted, unwrapped trajectory,
+doesn't account for.
+
+**The fix was to use it the way real systems actually do.** Neither real
+active sonar's DHFM pulses nor standard LoRa's own up/down-chirp trick
+ever try to decode an arbitrary payload value from the paired
+measurement directly — they apply it to a *known, unshifted* reference
+(a preamble) to measure a channel parameter once, then use that estimate
+to correct ordinary data before decoding it normally. Doing the same
+thing here — acquiring $\alpha$ from a paired $m=0$ preamble, then
+correcting every payload burst with it before an ordinary single-sweep
+decode — sidesteps the wrap-discontinuity problem entirely (there's no
+wrap to interact badly with, since the preamble is never shifted) and
+works exactly, not just approximately:
+
+![Symbol error rate vs. Doppler scale, uncorrected vs. DHFM-style paired-sweep correction](pictures/21_paired_sweep_doppler_correction.png)
+
+An uncorrected receiver collapses to essentially 100% error the moment
+$\alpha$ drifts past roughly half a symbol bin — the same cliff
+08_lora_ser_vs_doppler_scale.png already showed. With the paired-sweep
+correction, decode accuracy stays pinned at the noise floor across the
+entire $\pm15\%$ sweep tested. The $\alpha$ estimate itself is accurate
+to a few parts in $10{,}000$ at 10 dB SNR, and — for the same reason
+Chapter 6.5's `full_symbol_cfo_estimate` fix works down to very low
+SNR — stays accurate to a fraction of a percent even at $-10$ dB, since
+this measurement also correlates the *whole* symbol rather than a small
+window.
+
+The honest scope: this is a genuine, working adaptation of real active
+sonar's own Doppler-handling technique, not a simplified toy version of
+it — but note what changed to make it work. The version that decodes an
+arbitrary payload shift directly (closer to what a first guess at "the
+same thing" might look like) has a real, characterized limitation; the
+version that matches how real systems actually deploy the trick — on a
+known reference, correcting data afterward — works cleanly. That
+distinction was itself worth finding out, not assumed going in.
+
+---
+
 ## Where to go from here
 
 - `PAPER.md` — the same results with every proof given in full, organized
