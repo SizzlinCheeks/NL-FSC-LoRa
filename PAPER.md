@@ -494,6 +494,57 @@ Tests: `tests/test_afc.py::test_multi_burst_acquisition_beats_single_burst_at_lo
 | Kalman acquisition-covariance fix | §7.2 | `afc.py::KalmanAFCLoop.set_acquired` | `test_afc.py::test_kalman_set_acquired_resets_covariance_not_just_cfo` |
 | End-to-end packet decode under Doppler | §7 | `examples/packet_experiments.py` | (SER-vs-SNR sweeps; no dedicated pytest, see script's own correctness assertions) |
 
+## 8. Comparison with standard LoRa, and when this applies
+
+**Where nonlinear trajectories don't help.** §4's SER-vs-SNR sweep across
+every trajectory shape shows essentially identical performance to linear
+once decoded with `fft_correlation_demod` — trajectory curvature carries
+no baseline noise-tolerance advantage. §5.1 shows the correlation-magnitude
+loss from a constant CFO is likewise shape-independent, since
+$|s(t)|=1$ for every trajectory tested.
+
+**Where the advantage is real but partial.** §5.2's exact self-similarity
+theorem gives HFM a genuine single-waveform advantage under wideband
+(scaling) Doppler — about 1 dB of matched-filter peak loss across a
+$\pm10\%$ scale sweep versus 10 dB+ for linear. §5.2 already documents
+that this only partially survives full $M$-ary decoding, since a
+Doppler-induced timing lag common to every trajectory shape dominates
+first.
+
+**Where the advantage is structural.** A linear chirp's instantaneous
+rate $df/dt$ is constant, so there is nothing locally measurable about
+*position* within the symbol — which is exactly why standard LoRa's own
+CFO estimation is a one-time operation: dechirping a linear chirp yields
+a pure tone, so an FFT peak position is a direct frequency measurement,
+and pairing an up-chirp preamble symbol with a down-chirp SFD symbol
+resolves the resulting CFO/timing-offset ambiguity,
+$\widehat{\mathrm{CFO}} \propto (\mathrm{peak}_{\mathrm{up}} +
+\mathrm{peak}_{\mathrm{down}})/2$ — cheap and exact, but performed once,
+at packet start. A curved trajectory's rate varies with position by
+construction, which is what makes §6's dual-edge measurement possible at
+all: an ongoing position/CFO sensor built from the payload's own symbols,
+requiring no additional reference chirps, for the duration of the packet.
+This is not a more expensive version of standard LoRa's mechanism; it is
+a capability standard LoRa's linear chirp cannot support at all, regardless
+of cost.
+
+**Applicability.** The case for this approach requires, jointly: (i) CFO
+that drifts materially within a single packet (long payload, fast drift
+rate, or both — if a one-shot preamble correction remains valid for the
+whole payload, there is nothing to track); (ii) no exploitable external
+model of the motion (no ephemeris for a known orbit, no telemetry
+side-channel, an uncooperative or unknown transmitter) — where such a
+model exists, precomputed Doppler pre-compensation with a linear chirp is
+simpler and at least as effective; and (iii) a preference for one long
+packet over repeated short packets with fresh-preamble re-acquisition
+(costly under duty-cycle-limited airtime budgets). Outside that
+intersection, a linear chirp is the better engineering choice: CFO
+estimation is a free byproduct of decoding rather than an additional
+measurement, and §4-§5.1 show no compensating loss in baseline noise or
+narrowband-CFO performance to offset that simplicity.
+
+---
+
 ## References
 
 - Vangelista, L. "Frequency Shift Chirp Modulation: The LoRa Modulation."

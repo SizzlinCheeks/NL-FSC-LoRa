@@ -843,6 +843,81 @@ one-directional drift.
 
 ---
 
+## Is This Actually Better Than Standard LoRa?
+
+Worth answering directly, since it's easy to walk away from a project like
+this assuming "curvy chirp, therefore more robust" — and that's mostly not
+what was found here.
+
+**Where it isn't better.** Baseline noise tolerance: Chapter 4's SER-vs-SNR
+sweep showed every trajectory shape, hyperbolic included, performing
+essentially identically to linear once decoded with the right general
+decoder. A simple constant CFO: Chapter 5.1 showed the correlation-loss
+from an offset is independent of shape too. Curving the trajectory buys
+neither.
+
+**Where it's real, but partial.** Under true wideband Doppler — time
+*scaling*, not just a frequency shift — HFM's exact self-similarity
+theorem holds up: a Doppler-scaled HFM waveform is exactly a shifted,
+rotated copy of itself, so a matched filter loses only about 1 dB of peak
+magnitude across a ±10% scale sweep versus 10 dB+ for linear. That's a
+genuine single-waveform advantage. Chapter 5.2's own honest caveat is that
+it only partially survives being plugged into full $M$-ary decoding,
+because a Doppler-induced timing lag — nearly identical across every
+trajectory shape — dominates before HFM's advantage gets a chance to
+matter.
+
+**Where it's real and not partial** is structural, not a property of the
+waveform's robustness at all: a linear chirp's instantaneous rate is the
+same constant everywhere, so there's nothing local to measure. That's
+exactly why standard LoRa's own CFO estimation works the way it does —
+dechirping a linear chirp produces a clean tone, so its FFT peak position
+*is* a frequency measurement, and pairing an up-chirp preamble symbol with
+a down-chirp SFD symbol resolves the CFO/timing-offset ambiguity that
+comes with it ($\widehat{\mathrm{CFO}} \propto (\text{peak}_{\text{up}} +
+\text{peak}_{\text{down}})/2$). Cheap, and correct — but it only happens
+*once*, at the start of the packet. A curved trajectory's rate genuinely
+varies with position, which is what makes Chapter 6's dual-edge measurement
+possible at all: using the payload's own symbols as an ongoing position/CFO
+sensor, with no extra reference chirps, for as long as the packet runs.
+Standard LoRa has no equivalent — not a cheaper version of the same idea,
+a different mechanism that structurally can't do continuous tracking.
+
+**So when would a system actually need that?** Not just "Doppler exists" —
+plenty of real systems handle Doppler without tracking it from the signal
+at all. A LEO satellite follows a known orbit, so a ground station with
+its ephemeris can precompute the expected Doppler curve and pre-correct
+for it; a drone with a telemetry link back to the receiver can do the
+same. If that side information is available, linear chirps plus a lookup
+table are simpler and better, full stop — this project's own numbers back
+that up. The actual case for this approach narrows to wherever a few
+things are true together:
+
+- **The Doppler drifts meaningfully within one packet**, not just
+  packet-to-packet — a long payload, or a fast drift rate, or both. If a
+  one-shot preamble correction stays valid for the whole payload, there's
+  nothing to track.
+- **No outside knowledge of the motion is available or wanted** — no
+  ephemeris, no GPS/telemetry side-channel, an uncooperative or unknown
+  transmitter, or a receiver that would rather be self-contained than
+  maintain an orbital propagator. Search-and-rescue beacons, tracking tags
+  on fast-moving wildlife, a drone swarm without centralized telemetry, or
+  a cheap IoT ground segment that skips precise orbit tracking are the
+  realistic cases.
+- **Sending one long packet beats sending many short, re-synchronized
+  ones.** Standard LoRa's fallback under drift with no side information is
+  shorter packets and frequent re-acquisition from a fresh preamble —
+  which costs airtime and battery under LoRaWAN-style duty-cycle limits.
+
+Outside that intersection, linear chirps win: simpler, and CFO estimation
+comes free as a byproduct of decoding rather than as a separate measurement
+step. This project's case for nonlinear trajectories was never "always
+better" — it's "enables a specific capability standard LoRa structurally
+cannot do," which is a narrower, more defensible, and more interesting
+claim.
+
+---
+
 ## Where to go from here
 
 - `PAPER.md` — the same results with every proof given in full, organized
