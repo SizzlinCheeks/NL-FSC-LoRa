@@ -506,6 +506,28 @@ then an SER-vs-SNR sweep:
 
 Run with `python examples/packet_experiments.py`.
 
+## How this compares to the real world
+
+Two honest comparisons, written up in full in `NARRATIVE.md`/`PAPER.md`
+rather than duplicated here:
+
+- **Standard LoRa.** Where nonlinear trajectories help (structural,
+  ongoing per-burst CFO tracking a linear chirp can't do at all) and
+  where they don't (baseline SNR, narrowband CFO) -- see NARRATIVE.md's
+  "Is This Actually Better Than Standard LoRa?" / PAPER.md §8.
+- **Real HFM sonar and radar.** This project's dual-edge/full-symbol
+  tracking is *not* how real active sonar or radar systems handle
+  Doppler with HFM waveforms, and it's worth being explicit about why:
+  those systems get Doppler-tolerant detection for free from a single
+  fixed matched filter (Kroszczyński 1969), then resolve the resulting
+  time/range bias (Murray et al. 2019) with a pair of oppositely-swept
+  pulses compared against each other (Wang et al. 2017) -- structurally
+  the same trick as standard LoRa's own up-chirp/down-chirp CFO
+  resolution, not the same trick as this project's per-burst measurement.
+  This project's mechanism works only because a LoRa symbol carries a
+  decodable payload a sonar ping doesn't -- see NARRATIVE.md's "How Real
+  HFM Sonar and Radar Systems Actually Handle Doppler" / PAPER.md §9.
+
 ## Extending it
 
 Adding a new trajectory is one function: `g(u)` on `[0, 1]` with `g(0)=0`,

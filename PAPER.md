@@ -638,6 +638,77 @@ narrowband-CFO performance to offset that simplicity.
 
 ---
 
+## 9. How real HFM sonar and radar systems actually handle Doppler
+
+Worth stating plainly, since it is easy to assume otherwise: nothing in
+this project's tracking design (§6) reproduces established HFM
+Doppler-handling practice from active sonar or radar. The two solve
+related problems with essentially unrelated mechanisms.
+
+**What HFM buys a real system, for free.** The exact self-similarity
+result behind this project's own §5.2 — $\varphi(\alpha t) = \varphi(t -
+\Delta) + c$ — is the same property the sonar/radar literature calls
+"Doppler-invariant matched filtering" (Kroszczyński 1969): a single fixed
+reference replica, correlated against a Doppler-scaled echo, still
+produces a sharp, near-full-amplitude peak regardless of target radial
+velocity. A linear-FM system needs a bank of Doppler-shifted replicas (or
+accepts serious peak loss and range walk) to get the same detection
+performance against an unknown velocity; HFM needs one. This part
+requires no per-pulse measurement at all — it is a property of the
+waveform against a fixed, previously-known reference.
+
+**The cost: a velocity-dependent bias, not a symbol-level tracking
+problem.** §6.5's own diagnosis already found the mechanism this
+tradeoff takes in our system (a Doppler-induced *lag*, not a noise
+floor); the sonar/radar literature's version of the same fact is that the
+matched filter's peak *time* position is biased by target velocity
+(Murray et al. 2019, cited in §5.2 and §6.4). Resolving that bias — i.e.
+actually estimating velocity, not just detecting a Doppler-tolerant peak
+— is where practice diverges sharply from this project.
+
+**The established fix: paired opposite-sweep pulses, not intra-pulse
+measurement.** Real active sonar systems estimate velocity from HFM by
+transmitting a pair of pulses of opposite sweep direction — a
+down-sweep (negative HFM) followed by an up-sweep (positive HFM),
+empirically the better-conditioned ordering — and comparing the two
+resulting (Doppler-biased) matched-filter delay estimates (Wang et al.
+2017). Range shifts both delays the same way; Doppler shifts them in
+opposite directions; two equations, two unknowns, decoupling true range
+from velocity in one linear solve, no bank of Doppler-shifted replicas
+required. Subsequent per-ping estimates are typically smoothed by a
+target-tracking filter across a dwell.
+
+**This is structurally the same trick as standard LoRa's own CFO
+estimation** (§8): an up-swept reference and a down-swept reference,
+combined linearly, because a symmetric sweep-direction reversal flips the
+sign of one error term (Doppler here, CFO's contribution to the
+dechirped tone there) while leaving the other (range there, timing
+offset here) unchanged. It is *not* the same trick as this project's
+`dual_edge_cfo_estimate`/`full_symbol_cfo_estimate` (§6, §6.5), which
+requires no second, oppositely-swept reference pulse at all. Those
+functions work only because LoRa's cyclic-shift CSS symbol carries a
+*decodable payload* per burst: the receiver decodes $\hat m$ first, then
+compares that one burst's own local structure against what the
+now-known symbol predicts. A sonar or radar HFM pulse carries no such
+decodable per-transmission payload — there is nothing analogous to
+"decode the symbol, then check its own trajectory against a
+prediction" for a real system to exploit. Paired-pulse bias cancellation
+and multi-ping tracking are architecturally available to any HFM system;
+this project's per-burst residual measurement is available only because
+of a structural feature (a payload symbol, decoded independently every
+burst) that LoRa's CSS format happens to provide and that classical HFM
+sonar/radar waveforms do not.
+
+**The honest summary.** This project's Doppler-tracking mechanism is not
+a rediscovery or simplification of established sonar/radar HFM practice.
+It is a distinct technique, native to a communications waveform with a
+per-symbol decodable payload, solving the analogous problem (recovering
+usable timing/frequency information from a Doppler-affected nonlinear-FM
+signal) by a different route than the paired-pulse, replica-based
+approach real active sonar and radar systems use.
+
+---
+
 ## References
 
 - Vangelista, L. "Frequency Shift Chirp Modulation: The LoRa Modulation."
@@ -653,6 +724,12 @@ narrowband-CFO performance to offset that simplicity.
   Engineering*, 2019. (Closed-form Doppler/range bias for HFM matched
   filtering — the sonar-literature counterpart to this project's own
   Doppler-induced lag finding in §5.2 and §6.4.)
+- Wang, F., Du, S., Sun, W., Huang, Q., Su, J. "A Method of Velocity
+  Estimation Using Composite Hyperbolic Frequency-Modulated Signals in
+  Active Sonar." *Journal of the Acoustical Society of America*, 141(5),
+  3117–3122, 2017. (Paired opposite-sweep HFM velocity estimation — the
+  established real-world mechanism contrasted with this project's own
+  approach in §9.)
 
 See `DISSERTATION_OUTLINE.md` for how these results map onto a dissertation
 structure, and `README.md` for how to regenerate every figure referenced

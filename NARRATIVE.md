@@ -1016,6 +1016,67 @@ claim.
 
 ---
 
+## How Real HFM Sonar and Radar Systems Actually Handle Doppler
+
+Worth being honest about directly, since it's an easy thing to assume:
+Chapter 6's dual-edge/full-symbol tracking isn't a version of how real
+sonar and radar systems handle Doppler with HFM waveforms. They solve a
+related problem, but by a genuinely different route.
+
+Real systems get one part of this essentially for free — the same
+self-similarity property behind Chapter 5's finding. Correlate a
+Doppler-scaled HFM echo against one fixed, unshifted reference, and the
+matched-filter peak stays sharp and strong no matter the target's
+velocity ("Doppler-invariant matched filtering," a property known since
+Kroszczyński's 1969 paper). A linear-FM system needs a whole bank of
+Doppler-shifted references to get the same detection performance against
+an unknown velocity; an HFM system needs exactly one. No per-pulse
+measurement, no tracking loop — just a fixed correlator that happens not
+to care how fast the target is moving.
+
+The cost of that free lunch is the same one this project found on its
+own and Murray et al.'s 2019 paper gives a closed form for: the matched
+filter's peak lands at a *biased* time, and that bias depends on
+velocity. So HFM buys Doppler-tolerant *detection*, but not an accurate
+*range*, unless something corrects for the bias — and this is exactly
+where real systems and this project part ways.
+
+Real active sonar resolves it with a **pair of pulses swept in opposite
+directions** — a down-sweep followed by an up-sweep (empirically the
+better-behaved order) — rather than anything measured from within a
+single pulse. Range shifts both pulses' delay estimates the same way;
+Doppler shifts them in *opposite* directions. Two measurements, two
+unknowns, one linear solve, and velocity and range come out decoupled
+(Wang et al., 2017) — no bank of Doppler-shifted replicas needed, and no
+looking inside a single pulse's own internal structure at all. Later
+pings then typically get smoothed by a tracking filter across the dwell.
+
+That paired-pulse trick will sound familiar — it's the same idea, almost
+move for move, as standard LoRa's own up-chirp/down-chirp CFO
+resolution from the "Is This Actually Better?" section above: two
+oppositely-swept references, combined linearly, because reversing the
+sweep flips the sign of one error term (Doppler there, CFO's effect on
+the dechirped tone here) while leaving the other (range there, timing
+offset here) alone. It is *not* the same idea as this project's own
+`dual_edge_cfo_estimate`/`full_symbol_cfo_estimate`, which needs no
+second, oppositely-swept pulse at all. Those work only because a LoRa
+symbol carries something a sonar ping doesn't: a *decodable payload*.
+The receiver decodes which symbol it just received, and only then
+compares that same burst's own local structure against what the
+now-known symbol predicts. A real sonar or radar pulse has no analogous
+"payload" to decode first — there's nothing for a real system to check a
+pulse against except another, separately-transmitted reference pulse.
+
+So the honest way to put it: this project's tracking design isn't a
+simplification or rediscovery of how real HFM systems handle Doppler.
+It's a different technique that happens to be available here because
+LoRa's chirp-spread-spectrum format hands the receiver a decodable
+symbol every single burst — a structural feature real sonar and radar
+waveforms don't have, and that real systems solve around with paired
+pulses and cross-ping tracking instead.
+
+---
+
 ## Where to go from here
 
 - `PAPER.md` — the same results with every proof given in full, organized
