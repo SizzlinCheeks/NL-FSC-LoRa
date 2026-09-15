@@ -808,8 +808,9 @@ project's specific simulation.
 Everything so far has been checked symbol by symbol, or burst by burst in
 isolation. A real receiver has to do all of it at once: recognize a
 packet, decode a payload correctly, and if there's Doppler, track it
-through the whole thing. Three tests, each harder than the last, all at
-SF=7 and 500 kHz bandwidth — a bandwidth this project hadn't used before
+through the whole thing. Four tests, each harder than the last (or, for
+the fourth, just a different channel model entirely), all at SF=7 and
+500 kHz bandwidth — a bandwidth this project hadn't used before
 (everything earlier used 125 kHz).
 
 The packet itself is a simplified stand-in for real LoRa framing: a short
@@ -826,7 +827,7 @@ every payload symbol comes back correct, every time — 200 packets,
 6000 payload symbols, zero errors. Dropping the SNR reproduces the same
 waterfall shape established back in Chapter 4:
 
-![Payload symbol error rate vs. SNR for all three packet tests](pictures/20_packet_level_validation.png)
+![Payload symbol error rate vs. SNR for all four packet tests](pictures/20_packet_level_validation.png)
 
 *(Left panel.)* Nothing new here mathematically — it's the same decoder as
 always — but it confirms the whole pipeline (preamble, payload framing,
@@ -938,6 +939,32 @@ same processing gain the rest of the receiver already relies on, dual-edge
 Doppler sign reversal, at the same kind of negative SNR this project's
 other packet tests already operate at — not stalling out at the edge of
 the noise floor the way the original measurement quietly did.
+
+### 7.4 A wideband Doppler scale, corrected the DHFM way
+
+A genuinely different channel model from the first three tests: not a
+narrowband constant-CFO offset, but a wideband Doppler *time-scale* —
+the effect Chapter 5.2 and the "Building the Same Thing" section further
+below are actually about. Correcting it doesn't use `afc.py` at all;
+it uses `nlfsc_lora.paired_sweep`'s DHFM-style paired opposite-sweep
+preamble, the real active-sonar technique described in "How Real HFM
+Sonar and Radar Systems Actually Handle Doppler." That section and
+"Building the Same Thing" validated the idea at the single-symbol level
+(`21_paired_sweep_doppler_correction.png`); this test checks whether it
+holds up once it's just one more piece of a full packet, preamble
+framing and all.
+
+It does, and by the same wide margin. At a Doppler scale of $\alpha=1.05$
+— past even this configuration's roughly half-bin failure threshold
+($\alpha \approx 1.004$) by more than ten times over — an uncorrected
+receiver fails on essentially every payload symbol, at every SNR tested.
+Acquiring $\alpha$ from a single paired up/down-sweep preamble pair (not
+even the multi-burst averaging Test 2's acquisition needed) and
+correcting each payload burst before an ordinary decode brings that back
+to a clean waterfall, error-free from 40 dB down to about −12 dB, only
+degrading below roughly −14 dB as the paired-sweep measurement itself
+runs into its own coherent-integration noise floor — the same kind of
+floor `full_symbol_cfo_estimate` has, for the same underlying reason.
 
 ---
 
@@ -1165,6 +1192,13 @@ same thing" might look like) has a real, characterized limitation; the
 version that matches how real systems actually deploy the trick — on a
 known reference, correcting data afterward — works cleanly. That
 distinction was itself worth finding out, not assumed going in.
+
+This held up outside the single-symbol test too. Chapter 7.4 wires the
+same acquire-then-correct pattern into a full packet — preamble framing,
+an SNR sweep, the whole pipeline — and finds the same result: a
+completely failing uncorrected receiver at $\alpha=1.05$ restored to a
+clean waterfall down to about $-12$ dB SNR by a single paired-sweep
+preamble pair, no multi-burst averaging needed.
 
 ---
 

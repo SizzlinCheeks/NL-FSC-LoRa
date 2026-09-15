@@ -488,12 +488,12 @@ Implementation: `nlfsc_lora/afc.py::full_symbol_cfo_estimate`,
 
 Every result above was checked per symbol or per burst. A receiver has to
 combine all of it at once: recognize a packet, decode the payload, and,
-under Doppler, acquire and track through the whole thing. Three tests
+under Doppler, acquire and track through the whole thing. Four tests
 (`examples/packet_experiments.py`), SF=7, BW=500 kHz — untested elsewhere
 in this project, which otherwise uses 125 kHz — each sending a simplified
-preamble (`N_PREAMBLE` copies of the base $m=0$ symbol, standing in for
-LoRa's own preamble up-chirps, not a bit-accurate sync-word/SFD
-reproduction) followed by a random payload, graded only on the payload.
+preamble standing in for LoRa's own preamble up-chirps (not a
+bit-accurate sync-word/SFD reproduction) followed by a random payload,
+graded only on the payload.
 
 **7.1 No Doppler.** Baseline: 200 packets, 6000 payload symbols, zero
 errors at 40 dB SNR; the SER-vs-SNR sweep reproduces §4's waterfall shape.
@@ -565,6 +565,27 @@ Implementation: `examples/packet_experiments.py`; `nlfsc_lora/afc.py::run_afc_se
 Tests: `tests/test_afc.py::test_multi_burst_acquisition_beats_single_burst_at_low_snr`,
 `test_kalman_set_acquired_resets_covariance_not_just_cfo`,
 `test_afc_tracks_a_doppler_reversal_at_negative_snr`.
+
+**7.4 A wideband Doppler scale, DHFM-style paired-sweep correction.** A
+different channel model from §7.1–7.3's narrowband constant CFO: a
+wideband Doppler time-scale $\alpha$ (§5.2), corrected not with `afc.py`
+but with §10's `nlfsc_lora/paired_sweep.py` — the real active-sonar
+technique from §9, already validated at the single-symbol level
+(`examples/output/21_paired_sweep_doppler_correction.png`) but not yet
+inside a full packet. At $\alpha=1.05$ — more than $10\times$ past this
+configuration's own half-bin failure threshold ($\alpha \approx 1.004$)
+— an uncorrected receiver fails on essentially every payload symbol at
+every SNR. Acquiring $\alpha$ from a single paired up/down-sweep
+preamble pair (no multi-burst averaging needed, unlike §7.2's
+acquisition) and correcting each payload burst before an ordinary
+single-sweep decode restores a clean waterfall, error-free from 40 dB
+down to $\approx -12$ dB, degrading below $\approx -14$ dB as
+`acquire_doppler_scale`'s own coherent-integration noise floor is
+reached — the same kind of floor `full_symbol_cfo_estimate` has, for the
+same reason (§6.5).
+
+Implementation: `examples/packet_experiments.py::test4_wideband_doppler_scale`;
+`nlfsc_lora/paired_sweep.py::acquire_doppler_scale`, `correct_doppler_scale`.
 
 ---
 
@@ -775,7 +796,10 @@ own noise floor (§6.5) applies here too, for the same reason
 Implementation: `nlfsc_lora/paired_sweep.py` (`reversed_trajectory`,
 `raw_lag_estimate`, `combine_paired_lags`, `doppler_scale_from_bias`,
 `acquire_doppler_scale`, `correct_doppler_scale`, `paired_sweep_decode`).
-Tests: `tests/test_paired_sweep.py`.
+Tests: `tests/test_paired_sweep.py`. §7.4 wires the same acquire-then-correct
+pattern into a full packet (preamble framing, SNR sweep) and finds the same
+result: a completely failing uncorrected receiver restored to a clean
+waterfall by a single preamble pair, no multi-burst averaging needed.
 
 ---
 

@@ -452,7 +452,7 @@ Everything above is checked per symbol or per burst. `examples/packet_experiment
 combines it into an actual packet: a simplified preamble (`N_PREAMBLE`
 copies of the base `m=0` symbol -- the same idea as LoRa's own preamble
 up-chirps, not a bit-accurate sync-word/SFD reproduction) followed by a
-random payload, decoded and graded only on the payload. Three tests at
+random payload, decoded and graded only on the payload. Four tests at
 SF=7, BW=500 kHz -- a bandwidth this project hadn't used elsewhere (125
 kHz everywhere above) -- each with a noiseless correctness check first,
 then an SER-vs-SNR sweep:
@@ -503,6 +503,21 @@ then an SER-vs-SNR sweep:
   FFT-threshold effect at very low SNR, the expected limit of any
   coherent-integration estimator, just roughly twenty decibels lower than
   where the original measurement gave out.
+- Fourth panel, a genuinely different channel model: a wideband Doppler
+  *time-scale* (alpha=1.05, over 10x past this configuration's own
+  half-bin failure threshold of alpha~1.004) instead of tests
+  1-3's narrowband constant CFO, corrected with `nlfsc_lora.paired_sweep`'s
+  DHFM-style paired opposite-sweep preamble (the real active-sonar
+  technique from "How this compares to the real world" below) rather than
+  `afc.py`. An uncorrected receiver fails on essentially every payload
+  symbol at every SNR tested; acquiring `alpha` from a *single* paired
+  up/down-sweep preamble pair (no multi-burst averaging needed, unlike
+  the middle panel's acquisition) and correcting each payload burst
+  before an ordinary decode restores a clean waterfall, error-free down
+  to about -12dB SNR before the paired-sweep measurement's own
+  coherent-integration floor is reached (~-14dB and below) -- confirming
+  `21_paired_sweep_doppler_correction.png`'s single-symbol result holds
+  up in a full packet too.
 
 Run with `python examples/packet_experiments.py`.
 
@@ -536,7 +551,9 @@ rather than duplicated here:
   the fix that did (applying it to a known preamble and correcting
   payload bursts afterward, the way real systems actually use it). See
   NARRATIVE.md's "Building the Same Thing: Paired-Sweep Doppler
-  Correction" / PAPER.md §10.
+  Correction" / PAPER.md §10 -- and the "End-to-end packet test" section
+  below (Test 4) for confirmation this holds up in a full packet, not
+  just isolated symbols.
 
 ## Extending it
 
