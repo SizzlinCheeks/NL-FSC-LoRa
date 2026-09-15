@@ -1,9 +1,8 @@
 """End-to-end packet-level validation, not just single-symbol statistics: build
 an actual packet (a short preamble of repeated base symbols, LoRa-style, then a
 random payload), send it through the channel, and confirm the receiver -- this
-project's dechirp/demodulation plus the dual-edge AFC/Kalman tracking built in
-afc.py -- recovers the payload correctly. Three progressively harder tests, as
-requested:
+project's dechirp/demodulation plus the AFC/Kalman tracking built in afc.py --
+recovers the payload correctly. Three progressively harder tests, as requested:
 
   Test 1: no CFO/Doppler at all -- the baseline. Correct decoding, repeated
           many times, then a symbol-error-rate sweep as SNR drops.
@@ -42,7 +41,7 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 
-from nlfsc_lora.afc import AFCLoop, KalmanAFCLoop, run_afc_sequence
+from nlfsc_lora.afc import AFCLoop, KalmanAFCLoop, measurement_noise_for, run_afc_sequence
 from nlfsc_lora.chirp import ChirpConfig
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
@@ -146,7 +145,7 @@ def test2_constant_doppler():
     cfo_fn = lambda n: np.full(n, const_cfo)
 
     # Correctness check for each tracker, noiseless-ish.
-    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop())]:
+    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop(measurement_noise=measurement_noise_for(cfg)))]:
         total_errors = 0
         n_trials_check = 100
         seq = cfo_fn(N_PREAMBLE + N_PAYLOAD)
@@ -160,7 +159,7 @@ def test2_constant_doppler():
     snr_range = np.arange(-30, -8, 2)
     n_trials = 150
     results = {}
-    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop())]:
+    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop(measurement_noise=measurement_noise_for(cfg)))]:
         t0 = time.time()
         ser = _ser_sweep(cfg, dg, N_PAYLOAD, cfo_fn, snr_range, n_trials, loop_factory=factory)
         print(f"{name} SER sweep done in {time.time()-t0:.1f}s")
@@ -175,67 +174,61 @@ def test3_uav_doppler():
     reversal to unfold slowly enough to stay trackable -- max_cfo/t0 must stay
     well under the ~55 Hz/burst cliff from 19_afc_rate_of_change_limit.png --
     so this test's payload is much longer than tests 1-2's, not an arbitrary
-    change: the same t0=90 (peak rate ~33 Hz/burst) already validated safe --
-    at SNR=10dB.
+    change: t0=90 (peak rate ~33 Hz/burst) is comfortably under that cliff.
 
-    That cliff turns out to be SNR-dependent, discovered directly rather than
-    assumed: at this same t0=90, sweeping SNR from -10dB up to 10dB found
-    accuracy pinned at a hard floor (~55% payload symbol errors) for
-    everything below roughly 6dB, then resolving to perfect by 10dB -- not a
-    smooth waterfall like tests 1-2's. Tracing one failing run showed the
-    first ~300 payload symbols decoding perfectly, then accuracy dropping to
-    exactly 0% and staying there. The obvious guess -- "a deterministic loss
-    of lock at the reversal's steepest point" -- didn't survive checking:
-    printing the tracked estimate burst by burst showed it wasn't drifting to
-    a wrong value at all, it was *frozen* at its acquired value while the
-    true CFO moved underneath it.
+    This test used to have a much worse floor: below roughly 5-8dB SNR,
+    tracking accuracy collapsed to a flat ~55% error regardless of how low
+    SNR went, unlike tests 1-2's smooth waterfall -- unacceptable for a
+    protocol whose entire point is decoding under the noise floor. Tracing it
+    down (not just re-explaining it) found the real cause was upstream of any
+    Doppler-specific tracking dynamics: the per-burst residual-CFO measurement
+    this loop depends on, afc.py's original dual_edge_cfo_estimate, fits an
+    81-sample local window and gets none of the ~27dB coherent processing
+    gain fft_correlation_demod itself gets from correlating the *whole*
+    512-sample symbol -- so even with a perfectly-tracked, zero-residual
+    signal (nothing to track at all), it returned an unusable None on
+    ~85-90% of bursts at -10dB SNR (measured directly). Tests 1-2 never
+    exposed this because neither needs a continuous stream of fresh
+    measurements (test 1 needs no tracking; test 2's CFO is constant, so
+    coasting on a stale value between rare good measurements is harmless).
+    Test 3's continuously-moving CFO is the only one of the three that does
+    need it, so it's the only one that exposed a floor that was silently
+    present the whole time.
 
-    The actual cause is upstream of tracking dynamics entirely, and has
-    nothing to do with the Doppler reversal specifically: afc.py's
-    dual_edge_cfo_estimate, fed a held-still, zero-residual signal (nothing
-    to track) at -10dB SNR, still returns None -- its own mismatch-quality
-    gate rejecting both edges -- on ~85-90% of bursts (measured directly).
-    The minority that do pass that gate at this SNR are themselves garbage
-    (mean error in the hundreds of kHz, measured), which is exactly what
-    max_jump_hz/innovation_gate exist to catch, and do, a second time. So the
-    outlier gates are doing their job correctly; they simply can't
-    manufacture a trustworthy measurement out of an untrustworthy one, and at
-    this SNR nearly all of them are untrustworthy. The loop is left coasting
-    on a stale acquired value until the true, continuously-moving CFO drifts
-    far enough from it that the residual exceeds fft_correlation_demod's own
-    capture range -- and once that happens mid-packet, nothing corrects it
-    for the rest of the run. (Widening edge_half_win doesn't rescue this
-    either -- tried directly, a 4x wider window still leaves accepted
-    measurements off by tens of kHz at this SNR.)
+    The fix: afc.py::full_symbol_cfo_estimate, which dechirps the *whole*
+    symbol against its known decoded shape and reads the residual CFO off an
+    FFT peak instead -- the same coherent-integration length the decoder
+    itself uses, so it gets the same processing gain. run_afc_sequence uses
+    this by default now. Measured directly, that alone took this test from a
+    hard floor around 5-8dB down to AFCLoop decoding this exact scenario
+    perfectly at -12dB SNR and below. KalmanAFCLoop needed a second fix on
+    top of that: the new estimator's noise is roughly 16x smaller here than
+    at the 125kHz configuration chapter 6's examples use (FFT-peak-estimator
+    variance scales with the square of the FFT bin width, and this test's
+    bandwidth -- 500kHz vs 125kHz -- is 4x wider), so KalmanAFCLoop's fixed
+    measurement_noise default badly overstated its own noise here and made
+    the filter sluggish exactly when the reversal moved fastest. Using
+    afc.py::measurement_noise_for(cfg) (config-scaled, not a fixed constant)
+    instead of the bare default closes nearly all of that gap.
 
-    Tests 1 and 2 never hit this floor: test 1 needs no tracking at all, and
-    test 2's CFO is constant, so a good multi-burst acquisition plus the
-    occasional real measurement holds it fine -- coasting on a stale value is
-    harmless when the truth isn't moving. Test 3 is the only one of the three
-    whose correctness depends on a continuous stream of trustworthy per-burst
-    measurements, so it's the only one that exposes a noise floor that was
-    present, unnoticed, in every test. This also reframes
-    19_afc_rate_of_change_limit.png: that cliff was deliberately
-    characterized at 10dB, which is roughly where this same measurement
-    floor clears -- it isn't a second, SNR-dependent rate cliff, it's this
-    same measurement-starvation floor, just not yet visible at 10dB because
-    there's almost always something real to track with by then. The SNR
-    range below sweeps across that transition rather than the lower range
-    tests 1-2 use, so it actually shows the shape of it instead of landing
-    entirely on one side."""
+    Below roughly -14dB SNR both trackers still degrade -- correctly:
+    full_symbol_cfo_estimate's own FFT-threshold effect (see its docstring)
+    genuinely runs out of usable measurements down there, same as the
+    decoder itself eventually would. The SNR range below sweeps across that
+    transition instead of parking entirely on one side of it."""
     print("\n=== Test 3: UAV-style (sign-reversing) Doppler ===")
     cfg, dg = make_cfg("hyperbolic")
     max_cfo, t0 = 3000.0, 90.0
     n_payload = 712  # + N_PREAMBLE=8 -> 720 total, matching 18_uav_flyover_afc.png's validated span
     half = (N_PREAMBLE + n_payload) / 2.0
     print(f"flyover: max_cfo={max_cfo}Hz, t0={t0} bursts, peak rate={max_cfo/t0:.1f} Hz/burst "
-          f"(well under the ~55 Hz/burst cliff), packet length={N_PREAMBLE + n_payload} bursts")
+          f"(well under the ~55 Hz/burst cliff at 10dB), packet length={N_PREAMBLE + n_payload} bursts")
 
     def cfo_fn(n):
         t = np.linspace(-half, half, n)
         return -max_cfo * t / np.sqrt(t ** 2 + t0 ** 2)
 
-    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop())]:
+    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop(measurement_noise=measurement_noise_for(cfg)))]:
         total_errors = 0
         n_trials_check = 10
         seq = cfo_fn(N_PREAMBLE + n_payload)
@@ -246,10 +239,10 @@ def test3_uav_doppler():
               f"out of {n_trials_check * n_payload} across {n_trials_check} packets")
         assert total_errors == 0, f"Test 3 baseline should decode correctly with {name}"
 
-    snr_range = np.arange(-2, 14, 2)  # spans the discovered lock-loss transition (~6-10dB), not tests 1-2's range
+    snr_range = np.arange(-20, 2, 2)  # spans the new (much lower) transition, now that the measurement floor is fixed
     n_trials = 20
     results = {}
-    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop())]:
+    for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop(measurement_noise=measurement_noise_for(cfg)))]:
         t0s = time.time()
         ser = _ser_sweep(cfg, dg, n_payload, cfo_fn, snr_range, n_trials, loop_factory=factory)
         print(f"{name} SER sweep done in {time.time()-t0s:.1f}s")

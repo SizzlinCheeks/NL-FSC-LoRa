@@ -705,14 +705,87 @@ guessing at one:
 
 ![Decode accuracy vs. peak Doppler rate at the sign crossing, showing the real cliff and how far realistic rates sit from it](pictures/19_afc_rate_of_change_limit.png)
 
-Both trackers hold accuracy near 1.0 up to roughly 55 Hz per burst and
-collapse above roughly 100. At this configuration's symbol duration
-(~1.02 ms), 55 Hz/burst works out to about 54 kHz/s of Doppler
-*acceleration* — and real Doppler acceleration, for anything from a LEO
-satellite pass to a fast low-altitude drone, runs orders of magnitude
-below that. The cliff is real, found by testing rather than assumed away,
-but it isn't close to being the binding constraint for either scenario
-this chapter set out to check.
+`AFCLoop` holds accuracy near 1.0 up to roughly 55 Hz per burst and
+collapses above roughly 100 — a fixed-gain filter's rate-tracking ability
+is bounded mainly by its gain, not by how precise any one measurement is,
+so this ceiling turns out to be a property of the loop filter itself.
+`KalmanAFCLoop` clears meaningfully faster reversals — perfect accuracy
+holds up to roughly 75 Hz/burst here, with a softer, more gradual falloff
+above that rather than a sharp wall — which makes sense in hindsight: a
+filter that tracks the *rate itself*, not just the CFO, should have more
+headroom against a fast-changing rate than one that only ever reacts to
+where the CFO already is. (§6.5 explains why this gap between the two
+trackers wasn't visible in earlier testing.) At this configuration's
+symbol duration (~1.02 ms), even `AFCLoop`'s lower ceiling of 55 Hz/burst
+works out to about 54 kHz/s of Doppler *acceleration* — and real Doppler
+acceleration, for anything from a LEO satellite pass to a fast
+low-altitude drone, runs orders of magnitude below that. The cliff is
+real, found by testing rather than assumed away, but it isn't close to
+being the binding constraint for either scenario this chapter set out to
+check.
+
+### 6.5 The negative-SNR floor, and the fix
+
+Everything in this chapter so far was tested at SNR = 10 dB. That was a
+reasonable choice for isolating the tracking *dynamics* question — does
+the loop follow a drift, does it survive a sign reversal — without also
+fighting measurement noise. But it quietly dodged the question that
+actually matters most for a protocol whose entire premise is decoding
+*under* the noise floor: does this tracking mechanism still work down
+there too? Chapter 7 asks that question directly, at negative SNR, and
+the honest answer at first was no — not because tracking itself broke,
+but because of something more basic underneath it.
+
+`dual_edge_cfo_estimate`'s per-burst measurement (§6.1-6.2) fits an
+81-sample local window — a small fraction of the roughly 512-sample
+symbol. That local fit never benefits from the coherent processing gain
+`fft_correlation_demod` itself gets by correlating the *whole* symbol
+against the reference (on the order of 10log₁₀(512) ≈ 27 dB) — which is
+exactly why decoding survives down to −20 to −30 dB SNR while this
+measurement, checked directly, returns nothing usable on roughly 85-90%
+of bursts at −10 dB, even fed a held-still signal with nothing to track
+at all. That gap is the real story: not a tuning oversight, but a whole
+factor of processing gain the rest of the receiver already relies on and
+this one piece of it never had.
+
+The fix keeps the same idea — decode first, then measure only the
+*residual* against the known symbol (§6.2's whole rationale still holds)
+— but measures it differently: dechirp the entire received symbol against
+its exact known shape, which cancels the trajectory's own phase and
+leaves (ideally) a pure tone at the residual CFO, buried in noise. Reading
+that tone's frequency off an FFT peak, with a touch of parabolic
+interpolation for sub-bin precision, gets the same coherent gain the
+decoder already enjoys. Measured directly: a noise floor of about 100 Hz
+std with no outliers at −10 dB SNR, degrading gracefully rather than
+falling off a cliff below that. `run_afc_sequence` uses this
+(`afc.py::full_symbol_cfo_estimate`) by default now; `dual_edge_cfo_estimate`
+is still in the module, since its own properties (documented in §6.1-6.2)
+are worth keeping, but it no longer feeds the tracking loop.
+
+This also explains something that might otherwise look like a
+contradiction: §6.4 said outlier-gating (`max_jump_hz`/`innovation_gate`)
+"fixes it directly," and that was true — for the problem it was solving.
+That fix targets a *rare* bad measurement slipping through an otherwise-
+healthy stream, at 10 dB, where good measurements are the norm. Negative
+SNR is the opposite situation: not an occasional bad reading among mostly
+good ones, but *almost no* trustworthy readings at all (the ~85-90% figure
+above). A gate can reject garbage, and it does, correctly — but it cannot
+manufacture a good measurement out of a bad one. Two different failure
+modes, needing two different fixes: one at the gate, one further upstream
+at the measurement itself.
+
+One more real bug came out of pushing this further: `KalmanAFCLoop`'s
+`measurement_noise` had been tuned once, against `dual_edge_cfo_estimate`
+at one configuration (SF7, 125 kHz, 10 dB). `full_symbol_cfo_estimate`'s
+noise is an FFT-peak estimate, so at fixed SNR its variance scales with
+the *square* of the FFT bin width — and Chapter 7's packets use 500 kHz,
+4× this chapter's bandwidth, so a 16×-different noise floor. Carried
+over unchanged, that stale value made `KalmanAFCLoop` badly *under*-trust
+good 500 kHz measurements, right when trusting them mattered most: 37%
+payload errors at −10 dB where `AFCLoop` had 0%, on an otherwise identical
+run. `afc.py::measurement_noise_for(cfg)` replaces the fixed constant
+with one scaled to the actual configuration, closing nearly all of that
+gap. Chapter 7 tells the full story with the actual numbers.
 
 None of this is a coincidence specific to LoRa. The literature on
 hyperbolic FM in sonar and radar has called it the "Doppler-tolerant"
@@ -809,78 +882,62 @@ reversal needs enough bursts to unfold slowly enough to stay trackable, so
 this packet's payload (712 symbols) is much longer than the other two
 tests' — not an arbitrary change, but a consequence of the Doppler
 profile's own timescale, using the same $t_0=90$ (peak rate about
-33 Hz/burst) already validated safe in Chapter 6, at SNR = 10 dB.
+33 Hz/burst) comfortably under Chapter 6's rate-of-change cliff.
 
-*(Right panel.)* That word "at" is doing real work. The first version of
-this test reused tests 1–2's SNR range and got a flat, unmoving ~55%
-error rate at every point in it — not the smooth waterfall the other two
-panels show. Tracing one failing run showed the first ~300 payload
-symbols decoding perfectly, then accuracy dropping to exactly 0% and
-staying there. First guess was a "deterministic loss of lock" tied to the
-reversal's steepest point — but that guess didn't survive checking, and
-what's actually happening is both more basic and more interesting than
-that.
+*(Right panel.)* The first version of this test held up fine at 10 dB but
+fell apart below roughly 5-8 dB SNR — a flat ~55% error rate no matter how
+much further SNR dropped, not the smooth waterfall the other two panels
+show, and unacceptable on its own terms: LoRa's whole premise is decoding
+*under* the noise floor, so a tracker that stops working well above it
+defeats the point. Tracing it down (not just re-explaining the symptom)
+found the real cause was upstream of anything Doppler-specific: printing
+the tracked estimate burst by burst showed it wasn't drifting to a wrong
+value at all, it was *frozen* at its acquired value while the true CFO
+moved underneath it, and the reason was `dual_edge_cfo_estimate` itself —
+fed a held-still, zero-residual signal (nothing to track, no Doppler
+involved at all) at −10 dB SNR, it still returned `None` on ~85-90% of
+bursts, because its 81-sample local phase fit never gets the ~27 dB of
+coherent processing gain `fft_correlation_demod` gets from correlating the
+*whole* symbol. `max_jump_hz`/`innovation_gate` were doing their job
+correctly — rejecting the rare measurement that did sneak through, which
+was itself garbage — but a gate can only reject bad information, it can't
+manufacture good information in its absence, and at this SNR there was
+almost nothing else on offer. Test 1 and 2 never exposed this because
+neither needs a continuous stream of fresh measurements to stay correct
+(Test 1 needs no tracking; Test 2's CFO is constant, so coasting on a
+stale value between rare good measurements is harmless) — Test 3's
+continuously-moving CFO is the only one of the three whose correctness
+actually depends on it.
 
-Printing the tracked estimate burst by burst showed it wasn't drifting
-into a wrong value at all — it was *frozen*, sitting at whatever it had
-acquired from the preamble while the true CFO kept moving underneath it.
-So the question became: why does the loop stop updating? The answer is
-in `dual_edge_cfo_estimate` itself, and it has nothing to do with the
-Doppler reversal specifically. Feeding it a *held-still, zero-residual*
-signal — no drift, no reversal, nothing to track — at −10 dB SNR still
-returns `None` (its own mismatch-quality check rejecting both edges) on
-about 85–90% of bursts. Worse, the handful of measurements that *do* pass
-that check at this SNR aren't just imprecise, they're nonsense — mean
-error in the hundreds of kilohertz, checked directly — which is exactly
-what `max_jump_hz`/`innovation_gate` exist to catch, and they do: nearly
-all of it gets rejected a second time downstream. That None-rate falls
-off fast with SNR (≈85% at −10 dB down to ≈6% by 6 dB, 0% by 10 dB) —
-which lines up with where the cliff sits, but the cause is upstream of
-tracking dynamics entirely. The 81-sample cubic-fit measurement this
-whole loop is built on simply isn't informative yet at −10 to ~0 dB SNR;
-widening the fit window doesn't rescue it either (tried directly — even
-4× wider, the accepted measurements are still off by tens of kilohertz at
-this SNR).
+The fix is Chapter 6.5's: `full_symbol_cfo_estimate`, which dechirps the
+*whole* received symbol against its known decoded shape and reads the
+residual CFO off an FFT peak, recovering the same coherent gain the
+decoder itself already has. `run_afc_sequence` uses this by default now.
+`KalmanAFCLoop` needed a second, config-specific fix on top of that: its
+`measurement_noise` had been tuned against the old measurement at
+Chapter 6's 125 kHz configuration, and the new measurement's noise scales
+with the square of the FFT bin width — so at this test's 500 kHz (4× the
+bin width), the old tuned value was roughly 16× too small, and using it
+unmodified made the filter badly overtrust noisy 500 kHz measurements.
+`measurement_noise_for(cfg)` scales the value to the actual configuration
+instead of carrying over a fixed constant.
 
-That reframes what's going on here. `AFCLoop.max_jump_hz` and
-`KalmanAFCLoop.innovation_gate` are doing exactly their job — protecting
-the loop from acting on garbage — but they can't manufacture a good
-measurement out of a bad one, and at this SNR there's almost nothing
-*but* bad ones to gate. The loop is left coasting on a stale acquired
-value for lack of anything trustworthy to replace it with, and once the
-true, continuously-moving CFO drifts far enough from that frozen number,
-the residual exceeds the decoder's own capture range and decoding fails —
-for the rest of the packet, because nothing after that point corrects it
-either.
-
-The reason this shows up only in Test 3, not 1 or 2, is the same reason
-it took this long to notice: Test 1 needs no tracking at all, and Test
-2's CFO is *constant*, so a good multi-burst acquisition plus the
-occasional lucky measurement is enough to hold it — coasting on a stale
-value is harmless when the truth isn't moving. Test 3 is the only one of
-the three whose correctness actually depends on getting fresh, trustworthy
-measurements continuously, so it's the only one that exposes a measurement
-floor that was there in every test, unnoticed, the whole time. This also
-connects back to Chapter 6's rate-of-change figure
-(`19_afc_rate_of_change_limit.png`): that cliff was characterized at one
-SNR, 10 dB, deliberately chosen because it's roughly where this same
-measurement pipeline becomes reliable in the first place. It isn't a
-separate, SNR-dependent version of the rate cliff — it's the same
-measurement-starvation floor described above, just not yet visible at
-10 dB because by then there's almost always something real to track with.
-
-None of this changes the answer to the actual question this chapter set
-out to check: given enough SNR margin (which every realistic satellite or
-UAV scenario has, by the enormous rate-tolerance margin Chapter 6 already
-established), the same dual-edge measurement this whole project has used
-from Chapter 1 onward does decode a real packet correctly, straight
-through a Doppler sign reversal, not just a one-directional drift. What
-this test adds is a more honest bound on "enough SNR": not just clear of
-the rate cliff, but clear of the dual-edge measurement's own noise floor
-(~8 dB or so at this SF/BW), a limit that has nothing to do with the
-Doppler rate, or even the Doppler existing at all, and was simply never
-visible before because no earlier test needed continuous fresh
-measurements to already be trustworthy.
+With both fixes in place, the right panel tells a very different story
+than the one described above. `AFCLoop` decodes this exact scenario
+correctly down to roughly −12 dB SNR, and `KalmanAFCLoop` — once its
+measurement noise is scaled correctly — follows closely behind, both
+resolving to a genuine waterfall rather than a flat floor. Below roughly
+−14 dB both trackers do eventually degrade, and correctly so:
+`full_symbol_cfo_estimate` has its own FFT-threshold effect down there
+(see its docstring), the same kind of floor any coherent estimator
+eventually hits, just now roughly twenty decibels lower than where the
+old measurement gave out. That is the answer to the question this test
+actually set out to check: given a per-burst measurement that uses the
+same processing gain the rest of the receiver already relies on, dual-edge
+(now full-symbol) tracking decodes a real packet correctly through a full
+Doppler sign reversal, at the same kind of negative SNR this project's
+other packet tests already operate at — not stalling out at the edge of
+the noise floor the way the original measurement quietly did.
 
 ---
 

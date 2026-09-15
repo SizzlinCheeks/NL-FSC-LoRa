@@ -1,9 +1,17 @@
 import numpy as np
 import pytest
 
-from nlfsc_lora.afc import AFCLoop, KalmanAFCLoop, dual_edge_cfo_estimate, run_afc_sequence
-from nlfsc_lora.channel import apply_cfo
+from nlfsc_lora.afc import (
+    AFCLoop,
+    KalmanAFCLoop,
+    dual_edge_cfo_estimate,
+    full_symbol_cfo_estimate,
+    run_afc_sequence,
+)
+from nlfsc_lora.channel import apply_cfo, awgn
 from nlfsc_lora.chirp import ChirpConfig, symbol_waveform
+from nlfsc_lora.receiver import fft_correlation_demod
+from nlfsc_lora.sync import correct_cfo
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 
 
@@ -37,6 +45,73 @@ def test_dual_edge_estimate_flags_wrong_symbol_hypothesis():
     _cfo_wrong, mismatch_a_wrong, mismatch_b_wrong = dual_edge_cfo_estimate(rx, cfg, dg, 90)
     assert mismatch_a_wrong > mismatch_a_correct
     assert mismatch_b_wrong > mismatch_b_correct
+
+
+def test_full_symbol_cfo_estimate_accurate_at_negative_snr():
+    """The fix for a real limit found by pushing this project's own negative-SNR
+    requirement: dual_edge_cfo_estimate's 81-sample local fit is unusable below
+    roughly 5-8dB SNR (its own quality gate rejects ~85-90% of bursts even with
+    nothing to track -- see test below), because it never gets the coherent
+    processing gain fft_correlation_demod itself gets from the whole symbol.
+    full_symbol_cfo_estimate dechirps the *whole* symbol and reads the residual
+    CFO off an FFT peak instead, recovering that gain. Measured directly: a
+    ~100Hz std with zero outliers over many trials at -10dB SNR, where decoding
+    itself is still solid but the old edge measurement was mostly unusable."""
+    cfg, dg = make_cfg()
+    rng = np.random.default_rng(21)
+    n_trials = 300
+    ests = []
+    for _ in range(n_trials):
+        m_true = int(rng.integers(0, cfg.M))
+        tx = apply_cfo(symbol_waveform(cfg, m_true), 0.0, cfg.sample_rate)
+        rx = awgn(tx, -10.0, rng)
+        m_hat = fft_correlation_demod(rx, cfg)
+        est, _peak_ratio = full_symbol_cfo_estimate(rx, cfg, m_hat)
+        assert est is not None
+        ests.append(est)
+    ests = np.array(ests)
+    assert np.std(ests) < 300.0
+    assert np.max(np.abs(ests)) < 1000.0
+
+
+def test_full_symbol_cfo_estimate_far_less_starved_than_dual_edge_at_negative_snr():
+    """Direct side-by-side comparison, at the SNR (-10dB) where the switch was
+    made: dual_edge_cfo_estimate should reject the large majority of bursts,
+    full_symbol_cfo_estimate should accept nearly all of them -- checked
+    directly rather than assumed, since this comparison is the entire reason
+    for the switch."""
+    cfg, dg = make_cfg()
+    rng = np.random.default_rng(22)
+    n_trials = 200
+    dual_edge_nones, full_symbol_nones = 0, 0
+    for _ in range(n_trials):
+        m_true = int(rng.integers(0, cfg.M))
+        tx = apply_cfo(symbol_waveform(cfg, m_true), 0.0, cfg.sample_rate)
+        rx = awgn(tx, -10.0, rng)
+        m_hat = fft_correlation_demod(rx, cfg)
+        if dual_edge_cfo_estimate(rx, cfg, dg, m_hat)[0] is None:
+            dual_edge_nones += 1
+        if full_symbol_cfo_estimate(rx, cfg, m_hat)[0] is None:
+            full_symbol_nones += 1
+    assert dual_edge_nones > 0.7 * n_trials
+    assert full_symbol_nones < 0.1 * n_trials
+
+
+def test_full_symbol_cfo_estimate_rejects_a_noise_only_peak():
+    """No real tone at all (pure noise, decoded m_hat is meaningless): the
+    peak-ratio gate should recognize there's nothing trustworthy here rather
+    than reporting confident-looking garbage."""
+    cfg, dg = make_cfg()
+    rng = np.random.default_rng(23)
+    n_rejected = 0
+    n_trials = 50
+    for _ in range(n_trials):
+        noise = (rng.standard_normal(cfg.n_samples) + 1j * rng.standard_normal(cfg.n_samples))
+        m_hat = int(rng.integers(0, cfg.M))
+        est, peak_ratio = full_symbol_cfo_estimate(noise, cfg, m_hat)
+        if est is None:
+            n_rejected += 1
+    assert n_rejected > 0.8 * n_trials
 
 
 def test_afc_loop_converges_toward_repeated_measurement():
@@ -232,6 +307,29 @@ def test_afc_tracks_through_a_doppler_sign_reversal():
 
     assert np.mean(dec_afc == true_symbols) > 0.95
     assert np.mean(dec_kal == true_symbols) > 0.95
+
+
+def test_afc_tracks_a_doppler_reversal_at_negative_snr():
+    """The actual point of the switch to full_symbol_cfo_estimate: this same
+    sign-reversing scenario used to be unusable below roughly 5-8dB SNR (the
+    tracker would freeze at its acquired value for lack of any trustworthy
+    per-burst measurement, and decoding would fail once the frozen estimate
+    drifted out of capture range -- see examples/packet_experiments.py's
+    test3_uav_doppler docstring for the full diagnosis). With the coherent
+    full-symbol measurement, tracking through the same reversal now holds up
+    at -10dB SNR too, not just 10dB."""
+    cfg, dg = make_cfg()
+    max_cfo, t0, half = 3000.0, 90.0, 360
+    n_bursts = 2 * half
+    true_cfo = _flyover_cfo(max_cfo, t0, half, n_bursts)
+    rng = np.random.default_rng(7)
+    true_symbols = rng.integers(0, cfg.M, n_bursts)
+
+    dec_afc, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=-10, seed=0, loop=AFCLoop(gain=0.3))
+    dec_kal, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=-10, seed=0, loop=KalmanAFCLoop())
+
+    assert np.mean(dec_afc == true_symbols) > 0.9
+    assert np.mean(dec_kal == true_symbols) > 0.9
 
 
 def test_afc_fails_for_an_unrealistically_fast_doppler_reversal():

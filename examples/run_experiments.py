@@ -586,12 +586,12 @@ def plot_dual_edge_afc():
     ax_cfo.set(xlabel="burst index", ylabel="CFO (Hz)", title="Tracked vs true CFO (one run)")
     ax_cfo.legend(fontsize=8)
 
-    ax_acc.plot(correct_tracked.mean(axis=0), label=f"dual-edge AFC (gain=0.3)")
+    ax_acc.plot(correct_tracked.mean(axis=0), label=f"AFC (gain=0.3)")
     ax_acc.plot(correct_static.mean(axis=0), label="static (acquire once, gain=0)")
     ax_acc.set(xlabel="burst index", ylabel="P(correct decode)",
                title=f"Decode accuracy vs burst index ({n_seeds} seeds)")
     ax_acc.legend(fontsize=8)
-    fig.suptitle(f"Dual-edge AFC tracking a 0-{max_cfo:.0f}Hz Doppler drift over {n_bursts} bursts (SNR=10dB)")
+    fig.suptitle(f"AFC tracking a 0-{max_cfo:.0f}Hz Doppler drift over {n_bursts} bursts (SNR=10dB)")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "12_dual_edge_afc.png"), dpi=150)
     plt.close(fig)
@@ -718,7 +718,7 @@ def plot_uav_flyover_afc():
     ax_acc.set(xlabel="burst index", ylabel="P(correct decode)",
                title=f"Decode accuracy vs burst index ({n_seeds} seeds)")
     ax_acc.legend(fontsize=8)
-    fig.suptitle(f"Dual-edge AFC through an approach/recede Doppler reversal (±{max_cfo:.0f}Hz, {n_bursts} bursts)")
+    fig.suptitle(f"AFC through an approach/recede Doppler reversal (±{max_cfo:.0f}Hz, {n_bursts} bursts)")
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, "18_uav_flyover_afc.png"), dpi=150)
     plt.close(fig)
@@ -771,7 +771,7 @@ def plot_afc_rate_of_change_limit():
                label="generous upper bound for realistic UAV/satellite rates (~1 Hz/burst)")
     ax.set(xlabel="peak instantaneous Doppler rate at sign crossing (Hz/burst)",
            ylabel="mean decode accuracy", xscale="log")
-    ax.set_title(f"Dual-edge AFC through a Doppler sign reversal:\nwhere tracking actually breaks ({n_seeds} seeds/point)", fontsize=11)
+    ax.set_title(f"AFC through a Doppler sign reversal:\nwhere tracking actually breaks ({n_seeds} seeds/point)", fontsize=11)
     ax.set_xlim(0.5, 250.0)  # headroom left of the realistic-rate marker so it's visibly separate from the axis
     ax.legend(fontsize=8, loc="lower left")
     fig.tight_layout()
