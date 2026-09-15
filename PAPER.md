@@ -457,14 +457,46 @@ than assumed:
 curve as §6.4, $t_0=90$ (peak rate $\approx 33$ Hz/burst), previously
 validated safe at SNR $=10$ dB. Reusing §7.1–7.2's lower SNR range here
 produced a flat $\approx 55\%$ error rate at every point tested — not a
-waterfall. Root cause, found by tracing one failing run: the first
-$\approx 300$ payload symbols decode correctly, then accuracy drops to
-exactly 0% at the reversal's steepest point and never recovers — a
-deterministic loss of lock, not accumulating noise. This sharpens §6.4's
-rate-of-change cliff rather than contradicting it: that cliff was
-characterized at one SNR (10 dB), and a noisier dual-edge measurement
-makes any given rate harder to track, so the safe-rate ceiling itself
-falls as SNR falls. Sweeping the actual transition (`examples/output/
+waterfall. Tracing one failing run: the first $\approx 300$ payload
+symbols decode correctly, then accuracy drops to exactly 0% and stays
+there. The tracked estimate itself, printed burst by burst, was not
+drifting toward a wrong value — it was frozen at its acquired value while
+the true CFO moved underneath it, which is a different failure mode than
+"loss of lock" implies and traces to a different cause than the Doppler
+rate.
+
+The cause is `dual_edge_cfo_estimate` itself, and it is independent of
+the reversal: fed a held-still, zero-residual signal at $-10$ dB SNR (no
+drift, nothing to track), it still returns `None` — its own
+mismatch-quality gate rejecting both edges — on $\approx$85–90% of
+bursts (measured directly), and the minority that pass are themselves
+off by a mean of hundreds of kHz, i.e. exactly the outliers
+`max_jump_hz`/`innovation_gate` exist to catch, and do: almost all of
+that minority is rejected again downstream. This None-rate falls with
+SNR ($\approx$85% at $-10$ dB, $\approx$6% at $6$ dB, 0% at $10$ dB) —
+coincident with where the cliff sits, but upstream of any tracking
+dynamics. The underlying 81-sample cubic-fit measurement is simply
+uninformative below roughly 5–8 dB SNR at this SF/BW; widening the fit
+window does not recover it (tested directly — a 4$\times$ wider window
+still leaves accepted measurements off by tens of kHz at this SNR).
+
+This reframes §6.4's outlier gates: they are working correctly here too
+(protecting the loop from the measurement's own garbage), but a gate
+cannot synthesize a trustworthy measurement out of an untrustworthy one,
+and at this SNR nearly all of them are untrustworthy. The loop is left
+coasting on a stale value until the true, moving CFO's gap from it
+exceeds the decoder's capture range, at which point decoding fails and
+stays failed. §7.1 is unaffected because it needs no tracking; §7.2 is
+unaffected because its CFO is constant, so an accurate acquisition plus
+occasional real measurements holds it fine — coasting is harmless when
+nothing is moving. §7.3 is the only test whose correctness depends on a
+continuous stream of trustworthy per-burst measurements, so it is the
+only one that exposes a noise floor that was present, but invisible, in
+every prior test. §6.4's rate-of-change cliff (`19_afc_rate_of_change_limit.png`)
+was deliberately characterized at 10 dB, which is roughly where this same
+measurement floor clears — it is not a separate SNR-dependent cliff, but
+the same measurement-starvation floor, simply not yet visible at that
+SNR. Sweeping the actual transition (`examples/output/
 20_packet_level_validation.png`, right panel) shows a hard floor from
 $-2$ to $\approx 6$ dB, then a sharp drop to near-zero by $8$–$10$ dB,
 `AFCLoop` clearing it a couple dB before `KalmanAFCLoop`.

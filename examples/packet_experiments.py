@@ -182,18 +182,47 @@ def test3_uav_doppler():
     assumed: at this same t0=90, sweeping SNR from -10dB up to 10dB found
     accuracy pinned at a hard floor (~55% payload symbol errors) for
     everything below roughly 6dB, then resolving to perfect by 10dB -- not a
-    smooth waterfall like tests 1-2's. Tracing one failing run showed why: the
-    first ~300 payload symbols decode perfectly, then accuracy drops to
-    exactly 0% right around the reversal's steepest point and never recovers
-    for the rest of the packet -- a deterministic loss of lock, not noise
-    accumulating gradually. The ~55 Hz/burst cliff in
-    19_afc_rate_of_change_limit.png was characterized at a single SNR (10dB);
-    a noisier dual-edge measurement makes any given rate harder to track, so
-    the true safe-rate ceiling drops as SNR drops, and 33 Hz/burst -- safely
-    inside that ceiling at 10dB -- stops being safe below roughly 6-8dB here.
-    The SNR range below sweeps across that transition rather than the lower
-    range tests 1-2 use, so it actually shows the shape of it instead of
-    landing entirely on one side."""
+    smooth waterfall like tests 1-2's. Tracing one failing run showed the
+    first ~300 payload symbols decoding perfectly, then accuracy dropping to
+    exactly 0% and staying there. The obvious guess -- "a deterministic loss
+    of lock at the reversal's steepest point" -- didn't survive checking:
+    printing the tracked estimate burst by burst showed it wasn't drifting to
+    a wrong value at all, it was *frozen* at its acquired value while the
+    true CFO moved underneath it.
+
+    The actual cause is upstream of tracking dynamics entirely, and has
+    nothing to do with the Doppler reversal specifically: afc.py's
+    dual_edge_cfo_estimate, fed a held-still, zero-residual signal (nothing
+    to track) at -10dB SNR, still returns None -- its own mismatch-quality
+    gate rejecting both edges -- on ~85-90% of bursts (measured directly).
+    The minority that do pass that gate at this SNR are themselves garbage
+    (mean error in the hundreds of kHz, measured), which is exactly what
+    max_jump_hz/innovation_gate exist to catch, and do, a second time. So the
+    outlier gates are doing their job correctly; they simply can't
+    manufacture a trustworthy measurement out of an untrustworthy one, and at
+    this SNR nearly all of them are untrustworthy. The loop is left coasting
+    on a stale acquired value until the true, continuously-moving CFO drifts
+    far enough from it that the residual exceeds fft_correlation_demod's own
+    capture range -- and once that happens mid-packet, nothing corrects it
+    for the rest of the run. (Widening edge_half_win doesn't rescue this
+    either -- tried directly, a 4x wider window still leaves accepted
+    measurements off by tens of kHz at this SNR.)
+
+    Tests 1 and 2 never hit this floor: test 1 needs no tracking at all, and
+    test 2's CFO is constant, so a good multi-burst acquisition plus the
+    occasional real measurement holds it fine -- coasting on a stale value is
+    harmless when the truth isn't moving. Test 3 is the only one of the three
+    whose correctness depends on a continuous stream of trustworthy per-burst
+    measurements, so it's the only one that exposes a noise floor that was
+    present, unnoticed, in every test. This also reframes
+    19_afc_rate_of_change_limit.png: that cliff was deliberately
+    characterized at 10dB, which is roughly where this same measurement
+    floor clears -- it isn't a second, SNR-dependent rate cliff, it's this
+    same measurement-starvation floor, just not yet visible at 10dB because
+    there's almost always something real to track with by then. The SNR
+    range below sweeps across that transition rather than the lower range
+    tests 1-2 use, so it actually shows the shape of it instead of landing
+    entirely on one side."""
     print("\n=== Test 3: UAV-style (sign-reversing) Doppler ===")
     cfg, dg = make_cfg("hyperbolic")
     max_cfo, t0 = 3000.0, 90.0

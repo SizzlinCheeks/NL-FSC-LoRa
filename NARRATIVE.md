@@ -814,32 +814,73 @@ profile's own timescale, using the same $t_0=90$ (peak rate about
 *(Right panel.)* That word "at" is doing real work. The first version of
 this test reused tests 1–2's SNR range and got a flat, unmoving ~55%
 error rate at every point in it — not the smooth waterfall the other two
-panels show. Tracing one failing run found why: the first ~300 payload
-symbols decoded perfectly, then accuracy dropped to exactly 0% right
-around the reversal's steepest point and never recovered for the rest of
-the packet. A deterministic loss of lock, not noise accumulating
-gradually.
+panels show. Tracing one failing run showed the first ~300 payload
+symbols decoding perfectly, then accuracy dropping to exactly 0% and
+staying there. First guess was a "deterministic loss of lock" tied to the
+reversal's steepest point — but that guess didn't survive checking, and
+what's actually happening is both more basic and more interesting than
+that.
 
-That points at something Chapter 6's own rate-of-change figure didn't
-cover: the cliff there (`19_afc_rate_of_change_limit.png`) was
-characterized at one SNR, 10 dB. A noisier dual-edge measurement makes any
-given rate harder to track, so the safe-rate ceiling itself drops as SNR
-drops — and 33 Hz/burst, safely under that ceiling at 10 dB, stops being
-safe somewhere around 6–8 dB. Sweeping the actual transition instead of
-tests 1–2's lower range shows it directly: a hard floor near 55–65% error
-from −2 dB up through about 6 dB, then a sharp drop to near-zero by
-8–10 dB — `AFCLoop` clearing it a couple dB before `KalmanAFCLoop` does.
-Nothing here contradicts Chapter 6's result; it sharpens it. "Safely under
-the cliff" was always conditional on the SNR the cliff was measured at,
-and now that condition is explicit instead of implicit.
+Printing the tracked estimate burst by burst showed it wasn't drifting
+into a wrong value at all — it was *frozen*, sitting at whatever it had
+acquired from the preamble while the true CFO kept moving underneath it.
+So the question became: why does the loop stop updating? The answer is
+in `dual_edge_cfo_estimate` itself, and it has nothing to do with the
+Doppler reversal specifically. Feeding it a *held-still, zero-residual*
+signal — no drift, no reversal, nothing to track — at −10 dB SNR still
+returns `None` (its own mismatch-quality check rejecting both edges) on
+about 85–90% of bursts. Worse, the handful of measurements that *do* pass
+that check at this SNR aren't just imprecise, they're nonsense — mean
+error in the hundreds of kilohertz, checked directly — which is exactly
+what `max_jump_hz`/`innovation_gate` exist to catch, and they do: nearly
+all of it gets rejected a second time downstream. That None-rate falls
+off fast with SNR (≈85% at −10 dB down to ≈6% by 6 dB, 0% by 10 dB) —
+which lines up with where the cliff sits, but the cause is upstream of
+tracking dynamics entirely. The 81-sample cubic-fit measurement this
+whole loop is built on simply isn't informative yet at −10 to ~0 dB SNR;
+widening the fit window doesn't rescue it either (tried directly — even
+4× wider, the accepted measurements are still off by tens of kilohertz at
+this SNR).
+
+That reframes what's going on here. `AFCLoop.max_jump_hz` and
+`KalmanAFCLoop.innovation_gate` are doing exactly their job — protecting
+the loop from acting on garbage — but they can't manufacture a good
+measurement out of a bad one, and at this SNR there's almost nothing
+*but* bad ones to gate. The loop is left coasting on a stale acquired
+value for lack of anything trustworthy to replace it with, and once the
+true, continuously-moving CFO drifts far enough from that frozen number,
+the residual exceeds the decoder's own capture range and decoding fails —
+for the rest of the packet, because nothing after that point corrects it
+either.
+
+The reason this shows up only in Test 3, not 1 or 2, is the same reason
+it took this long to notice: Test 1 needs no tracking at all, and Test
+2's CFO is *constant*, so a good multi-burst acquisition plus the
+occasional lucky measurement is enough to hold it — coasting on a stale
+value is harmless when the truth isn't moving. Test 3 is the only one of
+the three whose correctness actually depends on getting fresh, trustworthy
+measurements continuously, so it's the only one that exposes a measurement
+floor that was there in every test, unnoticed, the whole time. This also
+connects back to Chapter 6's rate-of-change figure
+(`19_afc_rate_of_change_limit.png`): that cliff was characterized at one
+SNR, 10 dB, deliberately chosen because it's roughly where this same
+measurement pipeline becomes reliable in the first place. It isn't a
+separate, SNR-dependent version of the rate cliff — it's the same
+measurement-starvation floor described above, just not yet visible at
+10 dB because by then there's almost always something real to track with.
 
 None of this changes the answer to the actual question this chapter set
-out to check: given enough SNR margin for the Doppler rate involved
-(which every realistic satellite or UAV scenario has, by the enormous
-margin Chapter 6 already established), the same dual-edge measurement
-this whole project has used from Chapter 1 onward does decode a real
-packet correctly, straight through a Doppler sign reversal, not just a
-one-directional drift.
+out to check: given enough SNR margin (which every realistic satellite or
+UAV scenario has, by the enormous rate-tolerance margin Chapter 6 already
+established), the same dual-edge measurement this whole project has used
+from Chapter 1 onward does decode a real packet correctly, straight
+through a Doppler sign reversal, not just a one-directional drift. What
+this test adds is a more honest bound on "enough SNR": not just clear of
+the rate cliff, but clear of the dual-edge measurement's own noise floor
+(~8 dB or so at this SF/BW), a limit that has nothing to do with the
+Doppler rate, or even the Doppler existing at all, and was simply never
+visible before because no earlier test needed continuous fresh
+measurements to already be trustworthy.
 
 ---
 

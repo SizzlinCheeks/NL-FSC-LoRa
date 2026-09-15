@@ -440,16 +440,29 @@ then an SER-vs-SNR sweep:
   closest-point-of-approach curve as `18`/`19`, previously validated safe
   at SNR=10dB). Reusing the other two tests' lower SNR range here produced
   a flat ~55% error rate at *every* SNR tested -- not a waterfall. Tracing
-  one failing run found why: the first ~300 payload symbols decode
-  correctly, then accuracy drops to exactly 0% right at the reversal's
-  steepest point and never recovers -- a deterministic loss of lock, not
-  accumulating noise. This sharpens `19`'s rate-of-change cliff rather than
-  contradicting it: that cliff was measured at one SNR (10dB), and a
-  noisier dual-edge measurement makes any given rate harder to track, so
-  the safe-rate ceiling itself falls as SNR falls. Sweeping the actual
-  transition shows a hard floor from -2dB to ~6dB, then a sharp drop to
-  near-zero by 8-10dB, `AFCLoop` clearing it a couple dB before
-  `KalmanAFCLoop`.
+  one failing run showed the first ~300 payload symbols decoding
+  correctly, then accuracy dropping to exactly 0% and staying there -- but
+  the tracked estimate itself was frozen at its acquired value, not
+  drifting toward a wrong one, which pointed away from "loss of lock" and
+  toward something upstream. The actual cause: `dual_edge_cfo_estimate`'s
+  own mismatch-quality gate rejects ~85-90% of bursts (measured directly,
+  even with zero residual to track -- this has nothing to do with the
+  Doppler reversal itself), and the few measurements that do pass it at
+  this SNR are themselves off by a mean of hundreds of kHz -- exactly what
+  `max_jump_hz`/`innovation_gate` exist to catch, and do, a second time.
+  So the gates are working correctly; they just can't manufacture a good
+  measurement out of a bad one, and at this SNR almost all of them are
+  bad. The loop coasts on a stale value until the true, moving CFO drifts
+  far enough away that the residual exceeds the decoder's capture range.
+  Test 1 doesn't need tracking and Test 2's CFO is constant (so coasting
+  is harmless), which is why only Test 3 exposes a measurement floor that
+  was there the whole time. It also reframes `19`'s rate-of-change cliff:
+  that figure was characterized at 10dB specifically because that's
+  roughly where this same measurement floor clears -- it isn't a separate
+  SNR-dependent cliff, just the same floor becoming visible below it.
+  Sweeping the actual transition shows a hard floor from -2dB to ~6dB,
+  then a sharp drop to near-zero by 8-10dB, `AFCLoop` clearing it a couple
+  dB before `KalmanAFCLoop`.
 
 Run with `python examples/packet_experiments.py`.
 
