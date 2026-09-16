@@ -658,6 +658,55 @@ estimation is a free byproduct of decoding rather than an additional
 measurement, and §4-§5.1 show no compensating loss in baseline noise or
 narrowband-CFO performance to offset that simplicity.
 
+**8.1 Grounding (i)-(iii) in measured numbers, not just categories.**
+Crystal-reference CFO dominates over Doppler CFO in the common case, and
+is a poor argument for tracking specifically: Semtech's guidance for LoRa
+transceiver reference clocks recommends a crystal rated to $\pm10$ ppm
+over $-20$ to $70^{\circ}$C ($\pm30$ ppm over the full industrial range),
+which is $\pm8.7$ to $\pm26$ kHz of CFO at 868 MHz on its own — comparable
+to or larger than any Doppler magnitude tested in this project — but its
+time constant (seconds to minutes, thermal) is far slower than a packet
+(ms to a few s even at SF12), so within one packet it is a constant, not
+a drift; §6-§7's tracking gains nothing over a one-shot correction against
+it. Condition (i) is really a claim about *motion*, not clock error.
+
+Published measurements for 868 MHz LoRa-band LEO links near 600 km give a
+peak Doppler shift around $\pm20$ kHz and a peak Doppler *rate* (at
+closest approach) of roughly 270–640 Hz/s. In this project's own units,
+that is $\approx0.07$–$0.16$ Hz/burst at SF7/500 kHz and
+$\approx0.28$–$0.66$ Hz/burst at SF7/125 kHz — two to three orders of
+magnitude under the $\approx55$ Hz/burst (`AFCLoop`) / $\approx75$ Hz/burst
+(`KalmanAFCLoop`) cliff (§6.4/6.5), i.e. $\approx80$–$800\times$ margin,
+not merely "orders of magnitude" as an unquantified assertion. In the
+other direction, this project's own tested CFO magnitudes (6 kHz constant,
+$\pm3$ kHz UAV flyover) undershoot a real LEO pass's $\pm20$ kHz swing by
+$3$–$6\times$, and past `examples/packet_experiments.py`'s own $\pm10$ kHz
+acquisition search span — the rate margin is unaffected, but a receiver
+built for this case specifically would need a wider search.
+
+Condition (ii) is weaker in practice than the category suggests: real
+LoRa-based LEO IoT operators (e.g. Lacuna Space) predict and pre-correct
+the Doppler curve from known ephemeris rather than track it blind, and
+lean on wider channels and conservative spreading factors (one public
+system uses 250 kHz/SF11) for margin rather than continuous tracking. The
+single most obvious motivating scenario — a cooperative satellite uplink
+— is, in practice, already solved the other way; what remains is
+genuinely condition (ii)'s harder case, an uncooperative or unknown
+transmitter with no ephemeris to exploit.
+
+Condition (iii)'s counterpart in the wideband regime (§5.2, §10) fails
+outright for any real RF platform: $\alpha$ departs from 1 by a
+non-negligible amount only once $v/c$ is a percent-scale fraction: this
+project's own $\alpha=1.05$ test implies $v\approx15{,}000$ km/s, while
+even a Mach-10 vehicle ($\approx3.4$ km/s) gives
+$v/c\approx1.1\times10^{-5}$ — an $\alpha$ deviation $\approx4{,}400\times$
+smaller than anything tested, well below any receiver's resolution.
+Wideband-scale Doppler correction (§10) is exact and correctly validated,
+but has no RF LoRa application this project has identified; its natural
+domain is acoustic (sonar), where $c\approx1500$ m/s makes ordinary target
+speeds a meaningful fraction of it — consistent with DHFM's origin as a
+sonar, not radar, technique.
+
 ---
 
 ## 9. How real HFM sonar and radar systems actually handle Doppler
@@ -824,6 +873,19 @@ waterfall by a single preamble pair, no multi-burst averaging needed.
   3117–3122, 2017. (Paired opposite-sweep HFM velocity estimation — the
   established real-world mechanism contrasted with this project's own
   approach in §9.)
+- Semtech Corporation. "LoRa® Modulation Crystal Oscillator Guidance,"
+  AN1200.14. (Reference-crystal ppm tolerance and CFO-tolerance guidance
+  underlying §8.1's crystal-drift numbers.)
+- "The influence of LEO satellite Doppler effect on LoRa modulation and its
+  solution." *IOP Conf. Series: Journal of Physics*, 2021; and satellite-IoT
+  LoRa Doppler literature more broadly (e.g. "Orthogonality Analysis in
+  LoRa Uplink Satellite Communications Affected by Doppler Effect,"
+  arXiv:2502.16179; "Adaptive Resource Optimization for LoRa-Enabled LEO
+  Satellite IoT System in High-Dynamic Environments"). (Source for §8.1's
+  868 MHz/600 km peak Doppler shift and rate figures; consulted via
+  literature search rather than independently re-derived, so treat the
+  specific Hz/s figure as an order-of-magnitude estimate, not a precise
+  citation to one paper's stated value.)
 
 See `DISSERTATION_OUTLINE.md` for how these results map onto a dissertation
 structure, and `README.md` for how to regenerate every figure referenced

@@ -1043,6 +1043,94 @@ claim.
 
 ---
 
+## Putting Real Numbers on the Applicability Claim
+
+The list above ("search-and-rescue beacons," "wildlife tracking tags") was
+qualitative — plausible-sounding scenarios, not measured ones. Worth
+actually checking against real numbers rather than leaving it there,
+even though (especially though) some of what turns up complicates the
+story this project would rather tell.
+
+**Crystal drift is usually the bigger CFO source, and it doesn't move
+within a packet.** Semtech's own guidance for LoRa transceiver reference
+clocks recommends a crystal good to about ±10 ppm over −20 to 70°C (worse,
+±30 ppm, over the full −40 to 85°C range), with additional aging of a few
+ppm over the first year. At 868 MHz that's ±8.7 kHz to ±26 kHz of CFO from
+the crystal alone — comparable to, and often larger than, any Doppler
+shift this project has tested. But crystal drift is thermally driven, with
+time constants of seconds to minutes; a LoRa packet is milliseconds to at
+most a few seconds even at SF12. Within *one* packet it is, to good
+approximation, a constant offset — which is exactly the case standard
+LoRa's own one-shot up/down-chirp correction already handles for free.
+Continuous per-burst tracking doesn't help with it at all; the entire
+case for tracking rests on whatever *does* move within a packet, which
+narrows things to genuine, ongoing relative motion — Doppler, not clock
+error.
+
+**Real Doppler magnitude and rate, for the flagship LEO-satellite case.**
+Published measurements for 868 MHz LoRa-band LEO satellite links at
+roughly 600 km altitude put peak Doppler shift at around ±20 kHz and peak
+Doppler *rate* (at closest approach, where it's steepest) in the range of
+roughly 270–640 Hz/s, depending on the exact geometry assumed. Converted
+into this project's own units — Hz per burst, since that's what the
+tracking loop actually has to keep up with — that rate is:
+
+- At SF7/500 kHz (this project's packet-test configuration, symbol
+  duration ≈0.256 ms): roughly 0.07–0.16 Hz/burst.
+- At SF7/125 kHz (Chapter 6's AFC figures): roughly 0.28–0.66 Hz/burst.
+
+Both are two to three orders of magnitude below the ~55 Hz/burst cliff
+`AFCLoop` actually hits (§6.4/6.5), or the ~75 Hz/burst `KalmanAFCLoop`
+clears. The "safely past any realistic rate" claim earlier in this
+document wasn't wrong, but it's now a specific number instead of an
+assertion: on the order of 80–800× of margin, not "a lot."
+
+Worth being honest about the other direction, too: this project's own
+test *magnitudes* undersold the real case. Chapter 7's constant-CFO test
+used 6 kHz; the UAV flyover used ±3 kHz. A real 868 MHz LEO pass swings a
+full ±20 kHz — three to six times larger than anything actually tested
+here, and wider than `packet_experiments.py`'s own acquisition search
+window (±10 kHz). None of the *rate* conclusions change — the margin above
+the cliff is still enormous either way — but a receiver actually built for
+this scenario would need a wider acquisition span than this project ever
+exercised.
+
+**Real satellite-LoRa systems mostly don't track blindly at all.**
+Operators actually flying LoRa-based LEO IoT links (Lacuna Space, and
+similar systems described in the satellite-IoT literature) lean on
+exactly the alternative this project's own applicability list names first:
+since the orbit is known, the Doppler curve is predictable, and the
+"fixed offset can be predicted and compensated while decoding" rather than
+measured blind. Where they do spend design margin on Doppler, it's mostly
+by choosing a wider channel and a more conservative spreading factor (one
+real system uses 250 kHz bandwidth and SF11 specifically for Doppler
+headroom), not by tracking CFO continuously within a packet. That doesn't
+kill this project's case — an *uncooperative or unknown* transmitter,
+with no ephemeris to lean on, is still a real gap ephemeris-based
+pre-compensation can't fill — but it does mean the single most obvious
+motivating example (a cooperative satellite IoT uplink) is, in practice,
+mostly solved a different way already.
+
+**Wideband Doppler *scale* — the effect Chapter 5.2 and the paired-sweep
+work are actually about — essentially never arises for RF LoRa at all.**
+$\alpha$ departs meaningfully from 1 only when $v/c$ is a non-negligible
+fraction of a percent; this project's own tests used $\alpha=1.05$, i.e.
+$v/c=0.05$, $v\approx15{,}000$ km/s. No real platform gets remotely
+close — even a hypersonic vehicle at Mach 10 ($\approx3.4$ km/s) gives
+$v/c\approx1.1\times10^{-5}$, an $\alpha$ deviation about 4,400× smaller
+than anything tested here, and orders of magnitude below what a receiver
+could even resolve. At RF, wideband-scale Doppler is a real, correctly-
+modeled effect with no real airtime application this project has found —
+which lines up with why it's a *sonar* technique in the literature to
+begin with: underwater, $c\approx1500$ m/s, so an ordinary vessel's speed
+already is a meaningful fraction of it. Chapter 6/6.5's narrowband
+tracker and Chapter 10's paired-sweep correction are both honestly built
+and correctly validated; the numbers here are about which one has an
+airtime home in RF LoRa specifically, and it's the narrowband one, for
+the narrow uncooperative-transmitter case above — not the wideband one.
+
+---
+
 ## How Real HFM Sonar and Radar Systems Actually Handle Doppler
 
 Worth being honest about directly, since it's an easy thing to assume:

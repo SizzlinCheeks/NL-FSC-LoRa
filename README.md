@@ -523,13 +523,29 @@ Run with `python examples/packet_experiments.py`.
 
 ## How this compares to the real world
 
-Two honest comparisons, written up in full in `NARRATIVE.md`/`PAPER.md`
+Honest comparisons, written up in full in `NARRATIVE.md`/`PAPER.md`
 rather than duplicated here:
 
 - **Standard LoRa.** Where nonlinear trajectories help (structural,
   ongoing per-burst CFO tracking a linear chirp can't do at all) and
   where they don't (baseline SNR, narrowband CFO) -- see NARRATIVE.md's
   "Is This Actually Better Than Standard LoRa?" / PAPER.md §8.
+- **Grounding that claim in real numbers.** How often does the
+  applicability case above actually hold? Checked against real specs and
+  measurements rather than left qualitative: crystal-reference CFO
+  (~9-26kHz at 868MHz from a standard ~10-30ppm crystal) usually dwarfs
+  Doppler CFO but is thermally slow, so it doesn't drift *within* a
+  packet and gains nothing from continuous tracking; a real 868MHz LEO
+  satellite pass's Doppler *rate* (~270-640Hz/s, published measurements)
+  is only ~0.07-0.66 Hz/burst in this project's own units -- 2-3 orders
+  of magnitude under the ~55-75Hz/burst cliff, though its *peak shift*
+  (~20kHz) is actually larger than anything this project tested; real
+  satellite-LoRa operators mostly pre-compensate from known orbits rather
+  than track blind; and wideband Doppler *scale* (paired_sweep.py) would
+  need a velocity no real RF platform gets within three-plus orders of
+  magnitude of, meaning it has no identified RF LoRa application at all --
+  its real home is acoustic/sonar. See NARRATIVE.md's "Putting Real
+  Numbers on the Applicability Claim" / PAPER.md §8.1.
 - **Real HFM sonar and radar.** This project's dual-edge/full-symbol
   tracking is *not* how real active sonar or radar systems handle
   Doppler with HFM waveforms, and it's worth being explicit about why:
