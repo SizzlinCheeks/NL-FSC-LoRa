@@ -369,9 +369,239 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   (`~drift_rate/gain`), not just noise jitter -- push the drift rate too far
   relative to the loop gain and bin size and the lag alone can exceed the
   tolerance (`tests/test_afc.py`'s docstring works the numbers for one such
-  case). This project uses a plain first-order loop; a proportional-integral
-  ("type-2") loop would remove that steady-state lag entirely and is a
-  natural next step, not yet implemented here.
+  case). `17_kalman_vs_expfilter_ramp.png` below follows up on that lag with
+  a second-order tracker; `18_uav_flyover_afc.png` and
+  `19_afc_rate_of_change_limit.png` test this same loop against a Doppler
+  that reverses sign rather than just a monotonic ramp.
+- **`17_kalman_vs_expfilter_ramp.png`** -- does a smarter tracker actually
+  reduce `AFCLoop`'s steady-state ramp lag? `KalmanAFCLoop` tracks CFO *and*
+  its rate jointly (a constant-velocity Kalman filter) instead of chasing
+  the latest measurement by a fixed fraction, which is the textbook fix for
+  a type-1 lag. On the same drift as `12_dual_edge_afc.png`: a real but
+  modest improvement, not dramatic -- the fixed-gain loop was already
+  reasonably matched to a smooth, near-constant drift. Tuning this mattered,
+  and mattered twice: an initial, untested guess for the measurement-noise
+  parameter was off by ~85x from the actual measured noise, and a later
+  switch in *how* the per-burst measurement itself works (see below)
+  changed that true noise value by another ~16x depending on configuration
+  -- both times, using the untuned/stale value made the filter *worse* than
+  the simple loop, a reminder that a Kalman filter is only as good as its
+  noise parameters, and those are worth measuring for the actual
+  configuration in use, not assumed to carry over.
+- **`18_uav_flyover_afc.png`** and **`19_afc_rate_of_change_limit.png`** --
+  a satellite pass drifts the CFO in roughly one direction; a low-altitude
+  UAV or drone approaching, passing closest approach, then receding produces
+  a Doppler that reverses sign within the same run. Modeled with the
+  standard constant-velocity closest-point-of-approach curve
+  (`f_d(t) = -f_max * t / sqrt(t^2 + t0^2)`, an S-curve through zero),
+  the same per-burst measurement this project has used throughout does track
+  the full reversal (`18`), with a real caveat found only by testing much
+  longer sequences than the original 200-burst demo: the original
+  measurement's (`dual_edge_cfo_estimate`) quality check occasionally
+  (~1/400, measured) passes a value that's wildly wrong anyway, and without
+  a second check, one such event permanently derailed the loop for the rest
+  of an 8000-burst run -- not a Doppler-rate problem, a missing outlier
+  gate. Both trackers now reject implausible measurements before trusting
+  them (`AFCLoop.max_jump_hz`, `KalmanAFCLoop.innovation_gate`), which fixes
+  it. `19` sweeps the reversal's steepness to find the *real* rate-of-change
+  limit rather than assume one: `AFCLoop` holds ~1.0 accuracy up to
+  ~55 Hz/burst and collapses above ~100; `KalmanAFCLoop` clears a
+  meaningfully higher ~75 Hz/burst with a softer falloff beyond that -- a
+  gap that wasn't visible until the measurement upgrade below made it
+  possible to see (a fixed-gain filter's rate ceiling is set mainly by its
+  gain; a filter tracking rate explicitly has more headroom once its
+  measurements are precise enough to use it). Even `AFCLoop`'s lower
+  ceiling is ~54 kHz/s of Doppler acceleration at this configuration's
+  symbol duration, several orders of magnitude past any physically
+  realistic satellite or UAV scenario.
+- **The negative-SNR measurement floor, and the fix.** Everything above was
+  tested at 10dB SNR -- deliberately isolating tracking dynamics from
+  measurement noise, but that sidesteps LoRa's whole premise of decoding
+  under the noise floor. Pushed to negative SNR (see the packet test
+  below), `dual_edge_cfo_estimate`'s 81-sample local phase fit turned out to
+  be the actual bottleneck: it never gets the ~27dB of coherent processing
+  gain `fft_correlation_demod` itself gets from correlating the *whole*
+  ~512-sample symbol, so even a held-still, zero-residual signal (nothing to
+  track) returns nothing usable on ~85-90% of bursts at -10dB SNR (measured
+  directly) -- which is why decoding survives to -20 to -30dB while this
+  measurement didn't. `nlfsc_lora/afc.py::full_symbol_cfo_estimate` fixes
+  this by dechirping the *whole* symbol against its known decoded shape and
+  reading the residual CFO off an FFT peak instead -- the same coherent
+  gain the decoder already gets. Measured: ~100Hz std with zero outliers at
+  -10dB SNR. `run_afc_sequence` uses this by default now;
+  `dual_edge_cfo_estimate` stays in the module for its own documented
+  properties (above) but no longer feeds the tracking loop. This also
+  explains why `18`/`19`'s outlier-gating fix and this fix aren't the same
+  thing: outlier-gating protects against a *rare* bad reading among mostly
+  good ones (the 1/400 case above, at 10dB); this fixes the opposite
+  situation, where almost nothing coming out of the measurement is
+  trustworthy in the first place -- a gate can't manufacture good
+  information out of bad, it can only correctly reject the bad. Switching
+  estimators also exposed a second, config-dependent bug:
+  `KalmanAFCLoop.measurement_noise` had been tuned against the old
+  estimator at one bandwidth (125kHz); the new estimator's noise scales
+  with the *square* of the FFT bin width, so at the packet test's 500kHz
+  (4x the bin width) the true noise is ~16x higher than the stale tuned
+  value, and using it unmodified made the Kalman filter badly overtrust
+  measurements. `nlfsc_lora/afc.py::measurement_noise_for(cfg)` scales the
+  default to the actual configuration instead of a fixed constant.
+
+## End-to-end packet test
+
+Everything above is checked per symbol or per burst. `examples/packet_experiments.py`
+combines it into an actual packet: a simplified preamble (`N_PREAMBLE`
+copies of the base `m=0` symbol -- the same idea as LoRa's own preamble
+up-chirps, not a bit-accurate sync-word/SFD reproduction) followed by a
+random payload, decoded and graded only on the payload. Four tests at
+SF=7, BW=500 kHz -- a bandwidth this project hadn't used elsewhere (125
+kHz everywhere above) -- each with a noiseless correctness check first,
+then an SER-vs-SNR sweep:
+
+- **`20_packet_level_validation.png`**, left panel, no CFO/Doppler:
+  reproduces `14`'s waterfall shape in a full packet context, confirming
+  the preamble/payload framing itself doesn't change anything.
+- Middle panel, a constant 20kHz CFO (past this configuration's ~1953Hz
+  half-bin tolerance) acquired from the preamble and held through the
+  payload. 20kHz isn't an arbitrary test value -- it's this project's own
+  grounded figure from "Putting Real Numbers on the Applicability Claim":
+  published measurements put peak Doppler shift for a real 868MHz LEO
+  pass at roughly that magnitude. Building this surfaced three real,
+  fixed issues: (1) acquisition itself needs more SNR margin than plain
+  decoding -- searching many CFO candidates against one noisy burst gives
+  more chances for a false peak (measured: 27% single-burst acquisition
+  error at -15dB where plain decoding had 0%), fixed by
+  `run_afc_sequence(..., acquire_bursts=N)`, which majority-votes
+  acquisition across `N` preamble bursts instead of trusting one (27% ->
+  0%, measured); (2) `KalmanAFCLoop` needs its covariance reset on
+  acquisition, not just its point estimate -- handing the acquired CFO to
+  the tracker via direct assignment left the Kalman filter's covariance
+  at its near-infinite pre-acquisition default, so the first
+  post-acquisition measurement got absorbed with a near-total gain, able
+  to drag the estimate off a good value, fixed by `KalmanAFCLoop.set_acquired`;
+  and (3), found only once this test was updated to the real 20kHz
+  magnitude, the acquisition search span has to actually cover the real
+  problem -- the original 6kHz test value sat comfortably inside the old
+  +/-10kHz search span (an easier problem than the real one, by
+  accident), and at 20kHz that span misses the true offset entirely,
+  failing every payload symbol at every SNR until widened to +/-25kHz
+  (with the search step coarsened from 100Hz to 250Hz, measured to cost
+  no accuracy). With all three fixes, `AFCLoop` and `KalmanAFCLoop` track
+  identically here.
+- Right panel, a UAV-style sign-reversing Doppler (same
+  closest-point-of-approach curve as `18`/`19`). This test originally held
+  up at 10dB but fell apart below roughly 5-8dB SNR -- a flat ~55% error
+  rate no matter how much further SNR dropped, unacceptable against this
+  project's own premise of decoding under the noise floor. Tracing it down
+  (not just re-describing the symptom): the tracked estimate was *frozen*
+  at its acquired value, not drifting to a wrong one, and the cause was
+  `dual_edge_cfo_estimate` itself, unrelated to the Doppler reversal --
+  fed a held-still, zero-residual signal at -10dB SNR it still rejected
+  ~85-90% of bursts, because its local window fit never gets
+  `fft_correlation_demod`'s ~27dB of coherent gain from the whole symbol.
+  `max_jump_hz`/`innovation_gate` correctly rejected the rare measurement
+  that did sneak through (itself garbage), but a gate can't manufacture
+  good information out of bad, and at this SNR there was almost nothing
+  else on offer. Test 1 doesn't need tracking and Test 2's CFO is constant
+  (so coasting on a stale value is harmless), which is why only Test 3
+  exposed this floor.
+
+  With the fix above (`full_symbol_cfo_estimate` + `measurement_noise_for`),
+  this test now resolves to a genuine waterfall instead of a flat floor:
+  `AFCLoop` decodes this scenario correctly down to roughly -12dB SNR, and
+  `KalmanAFCLoop` -- once its measurement noise is scaled to this 500kHz
+  configuration -- tracks closely behind. Below roughly -14dB both
+  trackers degrade, correctly: `full_symbol_cfo_estimate` has its own
+  FFT-threshold effect at very low SNR, the expected limit of any
+  coherent-integration estimator, just roughly twenty decibels lower than
+  where the original measurement gave out.
+- Fourth panel, a genuinely different channel model: a wideband Doppler
+  *time-scale* (alpha=1.05, over 10x past this configuration's own
+  half-bin failure threshold of alpha~1.004) instead of tests
+  1-3's narrowband constant CFO, corrected with `nlfsc_lora.paired_sweep`'s
+  DHFM-style paired opposite-sweep preamble (the real active-sonar
+  technique from "How this compares to the real world" below) rather than
+  `afc.py`. An uncorrected receiver fails on essentially every payload
+  symbol at every SNR tested; acquiring `alpha` from a *single* paired
+  up/down-sweep preamble pair (no multi-burst averaging needed, unlike
+  the middle panel's acquisition) and correcting each payload burst
+  before an ordinary decode restores a clean waterfall, error-free down
+  to about -12dB SNR before the paired-sweep measurement's own
+  coherent-integration floor is reached (~-14dB and below) -- confirming
+  `21_paired_sweep_doppler_correction.png`'s single-symbol result holds
+  up in a full packet too.
+
+**`22_acquisition_magnitude_limit.png`** -- how far can Test 2's
+acquisition actually be pushed, not just "does the grounded 20kHz value
+work"? Walks the constant CFO from 1kHz toward this configuration's own
+sample rate (2MHz, so +/-1MHz is the complex-baseband aliasing boundary).
+A first attempt scaled the search step up together with the span (a
+reasonable-looking way to bound candidate count) and got a confusing
+failure starting around 600kHz -- traced to a real bug in the *test*, not
+the tracker: once the step exceeds roughly half the decoder's own
+half-bin tolerance, no candidate lands close enough to decode correctly,
+regardless of span. Fixed by holding the step at a safe, fixed value
+(1500Hz) instead of scaling it. Result: flat -- decode accuracy at every
+SNR level tested is unchanged from 1kHz to 990kHz (~99% of fs/2).
+Magnitude alone costs nothing; past the aliasing boundary, values become
+indistinguishable from a smaller equivalent (mod the sample rate), so
+"pushing higher" isn't a meaningful question in this idealized
+simulation. The one real, honest cost: acquisition search time grows
+roughly linearly with how wide the search span needs to be. A real
+receiver's actual ceiling would come from front-end RF filtering and ADC
+sample rate -- hardware constraints outside this project's scope, not a
+weakness in the tracking or acquisition math itself.
+
+Run with `python examples/packet_experiments.py`.
+
+## How this compares to the real world
+
+Honest comparisons, written up in full in `NARRATIVE.md`/`PAPER.md`
+rather than duplicated here:
+
+- **Standard LoRa.** Where nonlinear trajectories help (structural,
+  ongoing per-burst CFO tracking a linear chirp can't do at all) and
+  where they don't (baseline SNR, narrowband CFO) -- see NARRATIVE.md's
+  "Is This Actually Better Than Standard LoRa?" / PAPER.md §8.
+- **Grounding that claim in real numbers.** How often does the
+  applicability case above actually hold? Checked against real specs and
+  measurements rather than left qualitative: crystal-reference CFO
+  (~9-26kHz at 868MHz from a standard ~10-30ppm crystal) usually dwarfs
+  Doppler CFO but is thermally slow, so it doesn't drift *within* a
+  packet and gains nothing from continuous tracking; a real 868MHz LEO
+  satellite pass's Doppler *rate* (~270-640Hz/s, published measurements)
+  is only ~0.07-0.66 Hz/burst in this project's own units -- 2-3 orders
+  of magnitude under the ~55-75Hz/burst cliff, though its *peak shift*
+  (~20kHz) is actually larger than anything this project tested; real
+  satellite-LoRa operators mostly pre-compensate from known orbits rather
+  than track blind; and wideband Doppler *scale* (paired_sweep.py) would
+  need a velocity no real RF platform gets within three-plus orders of
+  magnitude of, meaning it has no identified RF LoRa application at all --
+  its real home is acoustic/sonar. See NARRATIVE.md's "Putting Real
+  Numbers on the Applicability Claim" / PAPER.md §8.1.
+- **Real HFM sonar and radar.** This project's dual-edge/full-symbol
+  tracking is *not* how real active sonar or radar systems handle
+  Doppler with HFM waveforms, and it's worth being explicit about why:
+  those systems get Doppler-tolerant detection for free from a single
+  fixed matched filter (Kroszczyński 1969), then resolve the resulting
+  time/range bias (Murray et al. 2019) with a pair of oppositely-swept
+  pulses compared against each other (Wang et al. 2017) -- structurally
+  the same trick as standard LoRa's own up-chirp/down-chirp CFO
+  resolution, not the same trick as this project's per-burst measurement.
+  This project's mechanism works only because a LoRa symbol carries a
+  decodable payload a sonar ping doesn't -- see NARRATIVE.md's "How Real
+  HFM Sonar and Radar Systems Actually Handle Doppler" / PAPER.md §9.
+- **Building the real thing.** The paired opposite-sweep idea above was
+  then actually implemented (`nlfsc_lora/paired_sweep.py`) and tested
+  against this project's own hyperbolic trajectory --
+  `21_paired_sweep_doppler_correction.png` -- including a first attempt
+  that didn't work (applying it directly to an arbitrary payload symbol's
+  cyclic shift, which has a real, characterized shift-dependent bias) and
+  the fix that did (applying it to a known preamble and correcting
+  payload bursts afterward, the way real systems actually use it). See
+  NARRATIVE.md's "Building the Same Thing: Paired-Sweep Doppler
+  Correction" / PAPER.md §10 -- and the "End-to-end packet test" section
+  below (Test 4) for confirmation this holds up in a full packet, not
+  just isolated symbols.
 
 ## Extending it
 
