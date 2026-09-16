@@ -897,6 +897,47 @@ other throughout — not a smaller or shakier margin for having moved to
 the real number, just the same waterfall shape, correctly centered on
 the problem this chapter actually set out to solve.
 
+**How much further does it actually go?** Worth pushing rather than
+stopping at "the grounded number works" — so `examples/packet_experiments.py`'s
+`push_acquisition_magnitude_limit()` walks the constant CFO up from 1 kHz
+toward this configuration's own sample rate (2 MHz, so ±1 MHz is where a
+complex baseband signal's own aliasing boundary sits) and watches where
+it actually breaks.
+
+The first attempt at this chased a red herring worth being honest about.
+Scaling the acquisition search's step size up together with its span — a
+reasonable-looking way to keep the number of candidates bounded as the
+range widens — produced a confusing, non-monotonic failure starting
+around 600 kHz. Tracing it down found the real cause: once that step
+exceeds roughly half the decoder's own half-bin tolerance (about
+1953 Hz here), no candidate in the grid may land close enough to the true
+CFO to decode correctly, *no matter how wide or narrow the search span
+is*. That's a property of the fixed, absolute precision decoding needs,
+not something that should ever scale with how wide the search has to be
+— a real bug in the test, not a discovery about the tracker.
+
+Holding the step fixed at a safe, fine value (1500 Hz) instead removes
+the problem entirely, and what's left is a clean, almost anticlimactic
+result:
+
+![Decode accuracy and acquisition search cost vs. constant CFO magnitude, out to the sample rate's own aliasing boundary](pictures/22_acquisition_magnitude_limit.png)
+
+*(Left panel.)* Flat. Accuracy at each SNR level tested is the same
+whether the CFO is 1 kHz or 990 kHz — magnitude alone costs nothing, all
+the way out to 99% of ±1 MHz. Past that boundary, values start aliasing
+(a CFO of $f$ and one of $f + f_s$ produce identical sampled sequences),
+so "pushing further" stops being a meaningful question in this idealized
+simulation rather than something that fails — a receiver's real ceiling
+would come from front-end RF filtering and ADC sample rate, hardware
+choices outside this project's scope, not from any weakness demonstrated
+here in the tracking or acquisition math itself.
+
+*(Right panel.)* The real cost of pushing the range is where it actually
+shows up: wall-clock search time grows roughly linearly with how wide the
+search has to be, since a fixed, fine step means proportionally more
+candidates to test. Widening blind acquisition coverage is a genuine,
+honest tradeoff against search time — just not against accuracy.
+
 ### 7.3 A Doppler that reverses sign
 
 The harder case: a UAV-style approach/closest-approach/recede curve

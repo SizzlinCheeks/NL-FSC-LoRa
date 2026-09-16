@@ -541,6 +541,32 @@ $\approx-12$ dB SNR, a transition through roughly $-14$ to $-20$ dB, both
 trackers tracking identically throughout — the same waterfall shape,
 now correctly centered on the grounded problem rather than an easier one.
 
+**How far does it actually go?** Pushed directly rather than left at the
+grounded number: `push_acquisition_magnitude_limit()` walks the constant
+CFO from 1 kHz toward this configuration's own sample rate (2 MHz, so
+$\pm1$ MHz is the complex-baseband aliasing boundary). A first attempt
+scaled the search step up together with the span (bounding candidate
+count as the range widens, a reasonable-looking design) and produced a
+confusing, non-monotonic failure from $\approx600$ kHz — traced to a real
+bug in the test, not a tracker limitation: once the step exceeds roughly
+half the decoder's own half-bin tolerance ($\approx1953$ Hz here), no
+candidate lands close enough to decode correctly regardless of span. A
+step fixed at a safe value (1500 Hz) removes this, and the result
+(`examples/output/22_acquisition_magnitude_limit.png`) is flat: decode
+accuracy at each SNR level tested is unchanged from 1 kHz to 990 kHz
+($\approx99\%$ of $f_s/2$) — magnitude alone costs nothing. Past that
+boundary, values alias ($f$ and $f+f_s$ are indistinguishable as sampled
+sequences), so pushing further stops being a meaningful question in this
+idealized simulation rather than something that fails; a real receiver's
+ceiling would come from front-end RF filtering and ADC sample rate,
+outside this project's scope. The genuine, honest cost of a wider search
+is wall-clock time, growing roughly linearly with span at fixed step
+resolution — a tradeoff against search time, not accuracy.
+
+Implementation: `examples/packet_experiments.py::push_acquisition_magnitude_limit`.
+Tests: `tests/test_afc.py::test_acquisition_handles_cfo_magnitude_near_the_sample_rate_nyquist_limit`,
+`test_acquisition_step_must_stay_under_half_bin_or_it_silently_fails`.
+
 **7.3 A sign-reversing (UAV-style) Doppler.** Same closest-point-of-approach
 curve as §6.4, $t_0=90$ (peak rate $\approx 33$ Hz/burst), comfortably under
 §6.4's rate-of-change cliff. The original version of this test held up at

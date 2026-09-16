@@ -414,6 +414,89 @@ def plot_all(t1, t2, t3, t4):
     plt.close(fig)
 
 
+def push_acquisition_magnitude_limit():
+    """How far can Test 2's acquisition actually be pushed, not just "does it
+    work at the grounded 20kHz value"? A direct follow-up to that fix: widen
+    the constant CFO from 20kHz toward this configuration's own sample rate
+    (2MHz, so +/-1MHz is the complex-baseband Nyquist boundary) and see where
+    -- and why -- it actually breaks.
+
+    First attempt at this (not shown here, see afc.py's docstring/git history
+    for the honest version) scaled acquire_step up together with acquire_span
+    to keep the candidate count bounded, and got a confusing, non-monotonic
+    failure pattern starting around 600kHz. Chased down directly: that was a
+    bug in the *test*, not the tracker -- once acquire_step exceeds roughly
+    half this configuration's own half-bin tolerance (~1953Hz here), no
+    candidate in the grid may land close enough to the true CFO for
+    fft_correlation_demod to decode correctly, regardless of how wide or
+    narrow acquire_span is. Fixed by keeping acquire_step fixed (1500Hz, a
+    safe margin under half-bin) regardless of how wide the search needs to
+    be, rather than scaling it with span.
+
+    With that fixed, there is no real accuracy ceiling short of the sample
+    rate's own aliasing boundary: pushed all the way to 999kHz (99.9% of
+    fs/2=1MHz), decode is still perfect, at the same SNR floor as the
+    grounded 20kHz case -- magnitude alone costs nothing in accuracy, only
+    search time (linearly more candidates as acquire_span grows). Past
+    fs/2, CFO values alias (a value and value+fs produce identical sampled
+    sequences), so "pushing higher" stops being a meaningful question in
+    this idealized simulation -- a real receiver's actual ceiling would come
+    from front-end RF filtering and ADC sample rate, hardware constraints
+    outside this project's scope, not from anything demonstrated here to be
+    a weakness in the tracking or acquisition algorithms themselves."""
+    print("\n=== Pushing Test 2's acquisition: how much CFO magnitude, really? ===")
+    cfg, dg = make_cfg("hyperbolic")
+    fs = cfg.sample_rate
+    acquire_step = 1500.0  # fixed, safely under half-bin (~1953Hz) -- see docstring
+    magnitudes = np.array([1000, 5000, 20000, 50000, 100000, 200000, 400000, 600000, 800000, 990000], dtype=float)
+    snr_levels = [-10.0, -16.0, -20.0]
+    n_trials = 40
+
+    ser = {snr: np.empty(len(magnitudes)) for snr in snr_levels}
+    acquire_times = np.empty(len(magnitudes))
+    for i, const_cfo in enumerate(magnitudes):
+        acquire_span = min(const_cfo * 1.1 + 5000.0, fs / 2 - 500.0)
+        seq = np.full(N_PREAMBLE + N_PAYLOAD, const_cfo)
+        t0 = time.time()
+        for snr_db in snr_levels:
+            errors, total = 0, 0
+            for t in range(n_trials):
+                payload_rng = np.random.default_rng(t)
+                payload = payload_rng.integers(0, cfg.M, N_PAYLOAD)
+                syms = np.concatenate([np.zeros(N_PREAMBLE, dtype=int), payload])
+                decoded, _tr, _res = run_afc_sequence(
+                    cfg, dg, syms, seq, snr_db, seed=t + 1_000_000,
+                    acquire=True, acquire_span=acquire_span, acquire_step=acquire_step, acquire_bursts=N_PREAMBLE,
+                    loop=AFCLoop(gain=0.3),
+                )
+                errors += int(np.sum(decoded[N_PREAMBLE:] != payload))
+                total += N_PAYLOAD
+            ser[snr_db][i] = errors / total
+        acquire_times[i] = (time.time() - t0) / len(snr_levels)  # mean per-SNR-level wall time
+        print(f"cfo={const_cfo:8.0f}Hz  span={acquire_span:9.0f}  "
+              + "  ".join(f"ser({s:.0f}dB)={ser[s][i]:.3f}" for s in snr_levels)
+              + f"  ({acquire_times[i]:.1f}s/level)")
+
+    fig, (ax_ser, ax_time) = plt.subplots(1, 2, figsize=(12, 4.5))
+    floor = 1.0 / (n_trials * N_PAYLOAD)
+    for snr_db in snr_levels:
+        ax_ser.plot(magnitudes, np.maximum(ser[snr_db], floor), marker="o", ms=4, label=f"{snr_db:.0f}dB SNR")
+    ax_ser.axvline(fs / 2, color="k", linestyle=":", linewidth=1, label="fs/2 (aliasing boundary)")
+    ax_ser.set(xlabel="constant CFO magnitude (Hz)", ylabel="payload symbol error rate",
+               xscale="log", yscale="log", title="Accuracy vs. CFO magnitude\n(flat -- magnitude alone costs nothing)")
+    ax_ser.legend(fontsize=8)
+
+    ax_time.plot(magnitudes, acquire_times, marker="o", ms=4, color="tab:red")
+    ax_time.set(xlabel="constant CFO magnitude (Hz)", ylabel="mean wall time per SNR level (s)",
+                xscale="log", title="Acquisition search cost vs. CFO magnitude\n(the real, linear cost of a wider blind search)")
+
+    fig.suptitle(f"How much Doppler can Test 2's acquisition actually handle? "
+                 f"(SF=7, BW=500kHz, acquire_step={acquire_step:.0f}Hz fixed, {n_trials} packets/point)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "22_acquisition_magnitude_limit.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     t1 = test1_no_doppler()
     t2 = test2_constant_doppler()
@@ -421,6 +504,8 @@ def main():
     t4 = test4_wideband_doppler_scale()
     plot_all(t1, t2, t3, t4)
     print(f"\nWrote figure to {OUT_DIR}/20_packet_level_validation.png")
+    push_acquisition_magnitude_limit()
+    print(f"Wrote figure to {OUT_DIR}/22_acquisition_magnitude_limit.png")
 
 
 if __name__ == "__main__":

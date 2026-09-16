@@ -530,6 +530,27 @@ then an SER-vs-SNR sweep:
   `21_paired_sweep_doppler_correction.png`'s single-symbol result holds
   up in a full packet too.
 
+**`22_acquisition_magnitude_limit.png`** -- how far can Test 2's
+acquisition actually be pushed, not just "does the grounded 20kHz value
+work"? Walks the constant CFO from 1kHz toward this configuration's own
+sample rate (2MHz, so +/-1MHz is the complex-baseband aliasing boundary).
+A first attempt scaled the search step up together with the span (a
+reasonable-looking way to bound candidate count) and got a confusing
+failure starting around 600kHz -- traced to a real bug in the *test*, not
+the tracker: once the step exceeds roughly half the decoder's own
+half-bin tolerance, no candidate lands close enough to decode correctly,
+regardless of span. Fixed by holding the step at a safe, fixed value
+(1500Hz) instead of scaling it. Result: flat -- decode accuracy at every
+SNR level tested is unchanged from 1kHz to 990kHz (~99% of fs/2).
+Magnitude alone costs nothing; past the aliasing boundary, values become
+indistinguishable from a smaller equivalent (mod the sample rate), so
+"pushing higher" isn't a meaningful question in this idealized
+simulation. The one real, honest cost: acquisition search time grows
+roughly linearly with how wide the search span needs to be. A real
+receiver's actual ceiling would come from front-end RF filtering and ADC
+sample rate -- hardware constraints outside this project's scope, not a
+weakness in the tracking or acquisition math itself.
+
 Run with `python examples/packet_experiments.py`.
 
 ## How this compares to the real world

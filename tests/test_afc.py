@@ -349,3 +349,73 @@ def test_afc_fails_for_an_unrealistically_fast_doppler_reversal():
 
     dec_afc, _t, _r = run_afc_sequence(cfg, dg, true_symbols, true_cfo, snr_db=10, seed=0, loop=AFCLoop(gain=0.3))
     assert np.mean(dec_afc == true_symbols) < 0.7
+
+
+def test_acquisition_handles_cfo_magnitude_near_the_sample_rate_nyquist_limit():
+    """Pushed directly, not assumed: how large a constant CFO can acquisition
+    actually handle? Given a search step fine enough to resolve the decoder's
+    own half-bin tolerance, there is no real accuracy ceiling short of this
+    configuration's own complex-baseband Nyquist boundary (+/-fs/2) -- checked
+    here at 495 kHz on a 500 kHz-bandwidth config (fs=2MHz, so this is ~99% of
+    fs/2), decoding perfectly at 0dB SNR, the same SNR this scenario handles at
+    a much smaller (20kHz) magnitude. Magnitude alone costs search time (more
+    candidates across a wider acquire_span), not accuracy -- see
+    examples/output/22_acquisition_magnitude_limit.png for the full sweep."""
+    bw = 500e3
+    g, dg = TRAJECTORIES["hyperbolic"]
+    cfg = ChirpConfig(sf=7, bandwidth=bw, sample_rate=4 * bw, g=g, f_center=hyperbolic_center_freq(bw))
+    fs = cfg.sample_rate
+    n_preamble, n_payload = 8, 30
+    const_cfo = 0.99 * fs / 2  # ~99% of the Nyquist boundary
+
+    rng = np.random.default_rng(3)
+    payload = rng.integers(0, cfg.M, n_payload)
+    symbols = np.concatenate([np.zeros(n_preamble, dtype=int), payload])
+    true_cfo = np.full(n_preamble + n_payload, const_cfo)
+
+    decoded, _tr, _res = run_afc_sequence(
+        cfg, dg, symbols, true_cfo, snr_db=0.0, seed=0,
+        acquire=True, acquire_span=fs / 2 - 500.0, acquire_step=1500.0, acquire_bursts=n_preamble,
+        loop=AFCLoop(gain=0.3),
+    )
+    assert np.array_equal(decoded[n_preamble:], payload)
+
+
+def test_acquisition_step_must_stay_under_half_bin_or_it_silently_fails():
+    """A real pitfall found by testing, not a hypothetical one: scaling
+    acquire_step up together with acquire_span (a natural-looking way to keep
+    the candidate count bounded as the search widens) breaks correctness, not
+    just precision, once the step exceeds roughly half the decoder's own
+    half-bin tolerance -- no candidate in the grid may then land close enough
+    to the true CFO to decode correctly, at *any* SNR, even though the true
+    value is well within the search span. A step fixed at a safe, fine
+    resolution regardless of span (as run_afc_sequence's callers should use)
+    does not have this problem."""
+    bw = 500e3
+    g, dg = TRAJECTORIES["hyperbolic"]
+    cfg = ChirpConfig(sf=7, bandwidth=bw, sample_rate=4 * bw, g=g, f_center=hyperbolic_center_freq(bw))
+    n_preamble, n_payload = 8, 30
+    const_cfo = 600_000.0
+    half_bin_hz = (bw / cfg.M) / 2
+
+    rng = np.random.default_rng(3)
+    payload = rng.integers(0, cfg.M, n_payload)
+    symbols = np.concatenate([np.zeros(n_preamble, dtype=int), payload])
+    true_cfo = np.full(n_preamble + n_payload, const_cfo)
+
+    coarse_step = 4400.0  # > half_bin_hz -- the mistake
+    assert coarse_step > half_bin_hz
+    decoded_coarse, _tr, _res = run_afc_sequence(
+        cfg, dg, symbols, true_cfo, snr_db=40.0, seed=0,
+        acquire=True, acquire_span=const_cfo * 1.1, acquire_step=coarse_step, acquire_bursts=n_preamble,
+        loop=AFCLoop(gain=0.3),
+    )
+    fine_step = 1500.0  # < half_bin_hz -- the fix
+    assert fine_step < half_bin_hz
+    decoded_fine, _tr2, _res2 = run_afc_sequence(
+        cfg, dg, symbols, true_cfo, snr_db=40.0, seed=0,
+        acquire=True, acquire_span=const_cfo * 1.1, acquire_step=fine_step, acquire_bursts=n_preamble,
+        loop=AFCLoop(gain=0.3),
+    )
+    assert np.mean(decoded_coarse[n_preamble:] == payload) < 0.5
+    assert np.array_equal(decoded_fine[n_preamble:], payload)
