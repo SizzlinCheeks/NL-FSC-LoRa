@@ -1351,6 +1351,72 @@ completely failing uncorrected receiver at $\alpha=1.05$ restored to a
 clean waterfall down to about $-12$ dB SNR by a single paired-sweep
 preamble pair, no multi-burst averaging needed.
 
+### Does it need hyperbolic specifically?
+
+Everything above uses hyperbolic FM because Chapter 5.2's theorem gives an
+*exact* closed form for $\Delta_{\text{down}}(\alpha)$ — but the underlying
+mechanism the trick actually exploits is simpler than the theorem: two
+oppositely-swept measurements of the same unknown shift/bias pair, solved as
+a linear system. That mechanism doesn't obviously require an exact
+self-similarity theorem to exist at all — worth actually checking on shapes
+that don't have one, rather than assuming the technique is hyperbolic-only.
+
+The generalization: replace the theoretical $q=f_{\text{low}}/f_{\text{high}}$
+with an empirically fit ratio — a least-squares fit of the same
+$\text{lag}_{\text{down}} = -q\cdot\text{lag}_{\text{up}}$ relationship,
+measured from an offline, noiseless calibration sweep of the shape's own
+waveform (`paired_sweep.fit_bias_ratio`) — and replace the closed-form
+$\Delta\to\alpha$ inversion with a lookup against that same calibration
+sweep (`paired_sweep.build_alpha_calibration` /
+`acquire_doppler_scale_calibrated`). No different in spirit from a sonar
+system's own precomputed ambiguity surface — the fit is done once, offline,
+against the known waveform, not against anything measured from an unknown
+channel.
+
+![Paired-sweep mechanism and calibrated correction for quadratic, sigmoid, and exponential trajectories, vs. hyperbolic](pictures/23_paired_sweep_shape_generalization.png)
+
+*(Left panel.)* The paired measurement laid open, the same way the "Building
+the down-sweep" figure never quite was: each shape's own
+$\text{lag}_{\text{down}}$ plotted against $\text{lag}_{\text{up}}$ across
+the calibration sweep. Hyperbolic sits on a perfectly straight line through
+the origin — the exact closed form. Quadratic and exponential are close to
+straight but not exactly (the "empirically fit, not exact" distinction —
+their fitted $q_{\text{eff}}$ isn't a true constant, just a good
+approximation of one). Sigmoid visibly bends away from a straight line near
+the extremes of the sweep, which is the direct, visible cause of the other
+two panels' finding.
+
+*(Middle and right panels.)* Checked directly, not assumed: quadratic and
+exponential restore the same near-0% SER hyperbolic gets, across the whole
+tested $\alpha$ range, at the same 10 dB SNR an uncorrected receiver fails
+completely at —
+`tests/test_paired_sweep.py::test_calibrated_acquisition_restores_full_accuracy_for_well_behaved_shapes`
+pins this directly. The calibration-curve substitute loses essentially
+nothing for those two shapes relative to hyperbolic's exact closed form.
+
+Sigmoid is the honest exception. Its calibration fit is decent on average,
+but under noise, near the edges of the tested $\alpha$ range, a single
+preamble-pair acquisition produces a grossly wrong estimate often enough to
+show up as outright decode failures (the middle panel's spikes to ~100% SER
+at $\alpha=0.90$ and $1.10$) — traced to `trajectories.py`'s own
+`sigmoid` docstring: it "lingers near the band edges," so the instantaneous
+frequency there is nearly flat, and a nearly-flat frequency carries little
+Doppler-*scale* information right where this measurement needs it most.
+Multi-burst averaging (the median-combine fix §7.2 used for a different,
+purely noise-driven acquisition problem) helps — measured directly, 35 of
+200 trials landing more than 0.01 off true $\alpha$ at one preamble burst
+falls to 6 of 200 at ten — but doesn't fully close the gap the way it did
+there, because this is a structural information-content limit of the
+waveform's own shape near $\alpha=0.90$, not a rare false peak among
+mostly-good measurements.
+
+The honest scope, updated: the paired-sweep *mechanism* is not
+hyperbolic-specific — it generalizes cleanly to at least two other curved
+shapes once the closed form is replaced with an empirical fit. What is
+specific to hyperbolic is the closed form itself, and the guarantee that
+comes with it: an exact answer with no offline calibration step and no
+shape-dependent risk of the kind sigmoid shows here.
+
 ---
 
 ## Where to go from here

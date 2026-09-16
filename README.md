@@ -602,6 +602,20 @@ rather than duplicated here:
   Correction" / PAPER.md §10 -- and the "End-to-end packet test" section
   below (Test 4) for confirmation this holds up in a full packet, not
   just isolated symbols.
+- **Does it need hyperbolic specifically?** Tested directly on quadratic,
+  sigmoid, and exponential -- none of which have §5.2's exact
+  self-similarity theorem behind them -- by replacing the theoretical `q`
+  with an empirically fit ratio and the closed-form inversion with a
+  calibration-curve lookup (`paired_sweep.py::fit_bias_ratio`,
+  `acquire_doppler_scale_calibrated`). Quadratic and exponential restore
+  the same near-0% SER as hyperbolic, no worse than the exact closed form;
+  sigmoid is a real, characterized exception -- its "lingers near the band
+  edges" shape leaves too little Doppler-scale information there for a
+  single-burst acquisition to reliably resolve, causing real decode
+  failures near the edges of the tested alpha range that multi-burst
+  averaging only partly fixes. `23_paired_sweep_shape_generalization.png`.
+  See NARRATIVE.md's "Does it need hyperbolic specifically?" / PAPER.md
+  §10.1.
 
 ## Extending it
 

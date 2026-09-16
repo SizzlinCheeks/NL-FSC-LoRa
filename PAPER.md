@@ -651,6 +651,7 @@ Implementation: `examples/packet_experiments.py::test4_wideband_doppler_scale`;
 | Kalman acquisition-covariance fix | §7.2 | `afc.py::KalmanAFCLoop.set_acquired` | `test_afc.py::test_kalman_set_acquired_resets_covariance_not_just_cfo` |
 | End-to-end packet decode under Doppler | §7 | `examples/packet_experiments.py` | (SER-vs-SNR sweeps; no dedicated pytest, see script's own correctness assertions) |
 | DHFM-style paired-sweep Doppler correction | §10 | `nlfsc_lora/paired_sweep.py` | `tests/test_paired_sweep.py::test_acquire_and_correct_recovers_full_decode_accuracy_across_full_m_range` |
+| Paired-sweep generalization past hyperbolic | §10.1 | `paired_sweep.py::fit_bias_ratio`, `acquire_doppler_scale_calibrated` | `test_paired_sweep.py::test_calibrated_acquisition_restores_full_accuracy_for_well_behaved_shapes`, `test_calibrated_acquisition_degrades_for_sigmoid_near_the_edge_of_the_alpha_range` |
 
 ## 8. Comparison with standard LoRa, and when this applies
 
@@ -892,6 +893,42 @@ Tests: `tests/test_paired_sweep.py`. §7.4 wires the same acquire-then-correct
 pattern into a full packet (preamble framing, SNR sweep) and finds the same
 result: a completely failing uncorrected receiver restored to a clean
 waterfall by a single preamble pair, no multi-burst averaging needed.
+
+**10.1 Generalizing past hyperbolic.** The closed form above depends on
+§5.2's theorem, proven only for hyperbolic — but the mechanism it feeds
+(two oppositely-swept lag measurements, solved as a linear system) does
+not obviously require an exact self-similarity theorem to exist. Tested
+directly on `quadratic`, `sigmoid`, and `exponential`, none of which have
+one: the theoretical $q$ is replaced by an empirically fit ratio
+(`fit_bias_ratio`, a least-squares fit of
+$\text{lag}_{\text{down}} = -q\cdot\text{lag}_{\text{up}}$ from an offline,
+noiseless calibration sweep of the waveform itself) and the closed-form
+$\Delta\to\alpha$ inversion is replaced by a calibration-curve lookup
+(`build_alpha_calibration`, `acquire_doppler_scale_calibrated`).
+
+Result: quadratic and exponential restore the same near-0% SER hyperbolic
+achieves, across the same $\alpha$ range, at the same 10 dB SNR
+(`tests/test_paired_sweep.py::test_calibrated_acquisition_restores_full_accuracy_for_well_behaved_shapes`).
+Sigmoid is a real, characterized exception: its calibration fit is decent
+on average, but a single preamble-pair acquisition produces a grossly
+wrong $\alpha$ estimate often enough, near the edges of the tested range,
+to cause outright decode failures — traced to its own "lingers near the
+band edges" shape (`trajectories.py::sigmoid`), which leaves the
+instantaneous frequency nearly flat exactly where the paired measurement
+needs Doppler-scale information most. Multi-burst averaging helps (35/200
+gross misestimates at 1 burst falls to 6/200 at 10, $\alpha=0.90$, 10 dB)
+but does not fully close the gap, since this is a structural
+information-content limit of the waveform, not a rare bad measurement
+among mostly-good ones
+(`examples/output/23_paired_sweep_shape_generalization.png`,
+`tests/test_paired_sweep.py::test_calibrated_acquisition_degrades_for_sigmoid_near_the_edge_of_the_alpha_range`).
+
+So the paired-sweep *mechanism* is not hyperbolic-specific; what is
+specific to hyperbolic is the closed form, and the exactness/no-calibration
+guarantee that comes with it.
+
+Implementation: `nlfsc_lora/paired_sweep.py` (`fit_bias_ratio`,
+`build_alpha_calibration`, `acquire_doppler_scale_calibrated`).
 
 ---
 

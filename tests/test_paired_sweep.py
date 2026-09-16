@@ -8,9 +8,12 @@ from nlfsc_lora.receiver import fft_correlation_demod
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
 from nlfsc_lora.paired_sweep import (
     acquire_doppler_scale,
+    acquire_doppler_scale_calibrated,
+    build_alpha_calibration,
     combine_paired_lags,
     correct_doppler_scale,
     doppler_scale_from_bias,
+    fit_bias_ratio,
     paired_sweep_decode,
     raw_lag_estimate,
     reversed_trajectory,
@@ -158,3 +161,81 @@ def test_acquire_doppler_scale_robust_at_negative_snr():
         alpha_hat = acquire_doppler_scale(rx_up, rx_down, cfg_up, cfg_down, Q)
         errs.append(alpha_hat - alpha_true)
     assert np.std(errs) < 0.01
+
+
+def make_shape_cfgs(shape, sf=7, bw=125e3, os=4):
+    """Same construction as make_cfgs(), but for any registered trajectory
+    shape rather than hardcoding hyperbolic -- used to check whether the
+    paired-sweep mechanism generalizes past the one shape with a closed
+    form."""
+    g_up, _ = TRAJECTORIES[shape]
+    g_down = reversed_trajectory(g_up)
+    f_center = hyperbolic_center_freq(bw, Q)  # same nonzero band for every shape, apples to apples
+    cfg_up = ChirpConfig(sf=sf, bandwidth=bw, sample_rate=os * bw, g=g_up, f_center=f_center)
+    cfg_down = ChirpConfig(sf=sf, bandwidth=bw, sample_rate=os * bw, g=g_down, f_center=f_center)
+    return cfg_up, cfg_down
+
+
+@pytest.mark.parametrize("shape", ["quadratic", "exponential"])
+def test_calibrated_acquisition_restores_full_accuracy_for_well_behaved_shapes(shape):
+    """The generalized (fit_bias_ratio + calibration-curve) path, checked
+    directly: for quadratic and exponential -- neither has hyperbolic's exact
+    self-similarity theorem behind it -- acquiring alpha from a m=0 preamble
+    pair and correcting payload bursts with it should restore the same
+    near-0% SER acquire_doppler_scale() gives hyperbolic, across the full
+    symbol alphabet, at the same 10dB SNR an uncorrected receiver fails
+    completely at."""
+    cfg_up, cfg_down = make_shape_cfgs(shape)
+    q_eff = fit_bias_ratio(cfg_up, cfg_down)
+    calibration = build_alpha_calibration(cfg_up, cfg_down, q_eff)
+
+    rng = np.random.default_rng(0)
+    for alpha_true in [0.9, 1.1]:
+        rx_pre_up = awgn(apply_doppler_scale(base_waveform(cfg_up), alpha_true), 10.0, rng)
+        rx_pre_down = awgn(apply_doppler_scale(base_waveform(cfg_down), alpha_true), 10.0, rng)
+        alpha_hat = acquire_doppler_scale_calibrated(rx_pre_up, rx_pre_down, cfg_up, cfg_down, q_eff, calibration)
+        assert alpha_hat == pytest.approx(alpha_true, abs=2e-3)
+
+        errors_corrected, errors_uncorrected = 0, 0
+        n_trials = 100
+        for _ in range(n_trials):
+            m_true = int(rng.integers(0, cfg_up.M))
+            rx = apply_doppler_scale(symbol_waveform(cfg_up, m_true), alpha_true)
+            if fft_correlation_demod(rx, cfg_up) != m_true:
+                errors_uncorrected += 1
+            if fft_correlation_demod(correct_doppler_scale(rx, alpha_hat), cfg_up) != m_true:
+                errors_corrected += 1
+        assert errors_uncorrected > 0.9 * n_trials
+        assert errors_corrected == 0
+
+
+def test_calibrated_acquisition_degrades_for_sigmoid_near_the_edge_of_the_alpha_range():
+    """The honest negative finding, pinned as a regression test rather than
+    just described: sigmoid's own calibration curve fits decently on average,
+    but at 10dB SNR with a single preamble burst its alpha estimate is
+    measurably noisier than quadratic's at the same extreme alpha -- traced
+    to sigmoid's near-flat instantaneous frequency at the band edges
+    (trajectories.py::sigmoid's own "lingers near the band edges" docstring)
+    carrying less Doppler-scale information there. This isn't a claim that
+    sigmoid never works (it's fine near alpha=1, see the generalization
+    figure) -- only that, unlike quadratic/exponential, it does not match
+    hyperbolic's robustness at the edges of the tested range."""
+    alpha_true = 0.90
+    n_trials = 60
+
+    def alpha_err_std(shape):
+        cfg_up, cfg_down = make_shape_cfgs(shape)
+        q_eff = fit_bias_ratio(cfg_up, cfg_down)
+        calibration = build_alpha_calibration(cfg_up, cfg_down, q_eff)
+        rng = np.random.default_rng(2)
+        errs = []
+        for _ in range(n_trials):
+            rx_up = awgn(apply_doppler_scale(base_waveform(cfg_up), alpha_true), 10.0, rng)
+            rx_down = awgn(apply_doppler_scale(base_waveform(cfg_down), alpha_true), 10.0, rng)
+            alpha_hat = acquire_doppler_scale_calibrated(rx_up, rx_down, cfg_up, cfg_down, q_eff, calibration)
+            errs.append(alpha_hat - alpha_true)
+        return float(np.std(errs))
+
+    std_sigmoid = alpha_err_std("sigmoid")
+    std_quadratic = alpha_err_std("quadratic")
+    assert std_sigmoid > 5 * std_quadratic

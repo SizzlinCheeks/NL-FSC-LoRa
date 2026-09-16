@@ -227,3 +227,115 @@ def correct_doppler_scale(rx: np.ndarray, alpha_hat: float) -> np.ndarray:
     acquire_doppler_scale(): acquire alpha_hat once from a preamble, then
     correct every subsequent payload burst before decoding it normally."""
     return apply_doppler_scale(rx, 1.0 / alpha_hat)
+
+
+# ---------------------------------------------------------------------------
+# Generalizing past hyperbolic: does the paired-sweep *mechanism* (two
+# oppositely-swept measurements, solved as a two-equations-two-unknowns
+# linear system) survive on a shape that has no exact self-similarity
+# theorem behind it -- quadratic, sigmoid, exponential -- or is hyperbolic's
+# closed form doing all the real work?
+#
+# Checked directly rather than assumed: yes, for most shapes, once the
+# theoretical q = f_low/f_high is replaced by an EMPIRICALLY fit ratio
+# (fit_bias_ratio, a least-squares fit of the same lag_down = -q*lag_up
+# relationship from an offline, noiseless calibration sweep -- no different
+# in spirit from a sonar system's own precomputed ambiguity surface) and the
+# closed-form doppler_scale_from_bias inversion is replaced by a lookup
+# against that same calibration sweep (build_alpha_calibration +
+# acquire_doppler_scale_calibrated).
+#
+# Measured directly (examples/run_experiments.py's
+# plot_paired_sweep_shape_generalization, 23_paired_sweep_shape_generalization.png):
+# quadratic and exponential restore full decode accuracy across the same
+# alpha range hyperbolic does, at the same 10dB SNR, with alpha estimation
+# error (~1e-4) matching hyperbolic's own closed-form accuracy -- the
+# calibration-curve substitute loses essentially nothing for those two
+# shapes. Sigmoid is the honest exception: its own calibration fit is decent
+# on average (least-squares R^2 ~0.95, vs >0.998 for quadratic/exponential),
+# but under noise it produces gross (>0.01) alpha misestimates on a real
+# fraction of trials near the edges of the tested alpha range (roughly 24%
+# of trials at alpha=0.90, 10dB SNR, 1 preamble burst) even though its
+# average error is small -- traced to sigmoid's own "lingers near the band
+# edges" shape (trajectories.py::sigmoid's docstring): near-flat
+# instantaneous frequency at the ends of the burst carries little
+# Doppler-scale information there, so the correlation-peak measurement this
+# whole technique depends on is thinner on signal exactly where it matters
+# most. Multi-burst averaging (median combine, the same fix Chapter 7.2 used
+# for a different, purely noise-driven acquisition problem) helps -- 35/200
+# gross misestimates at 1 burst falls to 6/200 at 10 bursts, alpha=0.90,
+# 10dB SNR -- but does not fully close the gap the way it did there, because
+# this is a structural information-content limit of the waveform itself, not
+# a rare false peak among mostly-good measurements.
+# ---------------------------------------------------------------------------
+
+
+def fit_bias_ratio(cfg_up: ChirpConfig, cfg_down: ChirpConfig, alpha_range=None) -> float:
+    """Empirically fit the lag_down(alpha) = -q_eff * lag_up(alpha) relationship
+    from a noiseless, offline calibration sweep, generalizing the theoretical
+    q = f_low/f_high (exact only for hyperbolic, see the module docstring) to
+    any shape. Least-squares, through the origin (both lags are exactly 0 at
+    alpha=1 for any shape, since no Doppler scale means no bias to measure)."""
+    if alpha_range is None:
+        alpha_range = np.linspace(0.85, 1.15, 61)
+    base_up = base_waveform(cfg_up)
+    base_down = base_waveform(cfg_down)
+    lags_up = np.array([raw_lag_estimate(apply_doppler_scale(base_up, a), cfg_up) for a in alpha_range])
+    lags_down = np.array([raw_lag_estimate(apply_doppler_scale(base_down, a), cfg_down) for a in alpha_range])
+    mask = np.abs(lags_up) > 1e-9
+    return float(-np.sum(lags_down[mask] * lags_up[mask]) / np.sum(lags_up[mask] ** 2))
+
+
+def build_alpha_calibration(
+    cfg_up: ChirpConfig, cfg_down: ChirpConfig, q_eff: float, alpha_range=None
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build a delta_up(alpha) lookup curve (sorted, monotonic-checked) from
+    the same offline sweep fit_bias_ratio uses, replacing
+    doppler_scale_from_bias's closed-form inversion (exact only for
+    hyperbolic) with an interpolation table -- the generalized counterpart
+    acquire_doppler_scale_calibrated() inverts via np.interp. Raises
+    ValueError if delta_up(alpha) isn't monotonic over the requested range
+    for this shape/config, since the lookup is then ambiguous."""
+    if alpha_range is None:
+        alpha_range = np.linspace(0.85, 1.15, 61)
+    alpha_range = np.asarray(alpha_range, dtype=float)
+    n = cfg_up.n_samples
+    base_up = base_waveform(cfg_up)
+    base_down = base_waveform(cfg_down)
+    delta_up = np.empty(len(alpha_range))
+    for i, a in enumerate(alpha_range):
+        lag_up = raw_lag_estimate(apply_doppler_scale(base_up, a), cfg_up)
+        lag_down = raw_lag_estimate(apply_doppler_scale(base_down, a), cfg_down)
+        _shift, delta_up[i] = combine_paired_lags(lag_up, lag_down, q_eff, n)
+    order = np.argsort(delta_up)
+    delta_sorted, alpha_sorted = delta_up[order], alpha_range[order]
+    if not np.all(np.diff(delta_sorted) > 0):
+        raise ValueError(
+            "delta_up(alpha) is not monotonic over this range for this shape/config -- "
+            "the calibration lookup is ambiguous; narrow alpha_range or check the shape."
+        )
+    return delta_sorted, alpha_sorted
+
+
+def acquire_doppler_scale_calibrated(
+    rx_preamble_up: np.ndarray,
+    rx_preamble_down: np.ndarray,
+    cfg_up: ChirpConfig,
+    cfg_down: ChirpConfig,
+    q_eff: float,
+    calibration: Tuple[np.ndarray, np.ndarray],
+) -> float:
+    """The generalized counterpart to acquire_doppler_scale(): same pipeline
+    (raw_lag_estimate on each direction, combine_paired_lags), but inverts
+    the resulting bias to alpha via a calibration-curve lookup (calibration,
+    from build_alpha_calibration) instead of the hyperbolic-specific closed
+    form doppler_scale_from_bias uses. Validated for quadratic and
+    exponential to the same accuracy as the closed form; sigmoid is a real,
+    characterized exception -- see this module's "Generalizing past
+    hyperbolic" section above."""
+    n = cfg_up.n_samples
+    lag_up = raw_lag_estimate(rx_preamble_up, cfg_up)
+    lag_down = raw_lag_estimate(rx_preamble_down, cfg_down)
+    _shift_hat, delta_up_hat = combine_paired_lags(lag_up, lag_down, q_eff, n)
+    delta_sorted, alpha_sorted = calibration
+    return float(np.interp(delta_up_hat, delta_sorted, alpha_sorted))

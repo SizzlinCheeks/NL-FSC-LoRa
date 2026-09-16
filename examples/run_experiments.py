@@ -45,6 +45,12 @@ g(t/T). Produces PNGs under examples/output/:
   21_paired_sweep_doppler_correction.png - SER vs Doppler scale, uncorrected vs a real
                                     active-sonar-style (DHFM) paired opposite-sweep
                                     preamble correction (nlfsc_lora.paired_sweep)
+  23_paired_sweep_shape_generalization.png - does the paired-sweep trick need hyperbolic's
+                                    exact self-similarity theorem, or does it generalize to
+                                    quadratic/sigmoid/exponential via an empirically fit bias
+                                    ratio + calibration curve? Quadratic/exponential: yes,
+                                    cleanly. Sigmoid: a real, characterized exception near
+                                    the edges of the alpha range.
 
 Run with: python examples/run_experiments.py
 """
@@ -62,7 +68,15 @@ from nlfsc_lora.chirp import ChirpConfig, base_frequency, base_waveform, symbol_
 from nlfsc_lora.doppler import doppler_scale_response
 from nlfsc_lora.local_rate import local_rate_demod, local_rate_ser_vs_snr
 from nlfsc_lora.metrics import autocorrelation, instantaneous_chirp_rate
-from nlfsc_lora.paired_sweep import acquire_doppler_scale, correct_doppler_scale, reversed_trajectory
+from nlfsc_lora.paired_sweep import (
+    acquire_doppler_scale,
+    acquire_doppler_scale_calibrated,
+    build_alpha_calibration,
+    correct_doppler_scale,
+    fit_bias_ratio,
+    raw_lag_estimate,
+    reversed_trajectory,
+)
 from nlfsc_lora.receiver import dechirp, fft_correlation_demod, fft_demod, matched_filter_bank_demod
 from nlfsc_lora.simulate import ser_vs_cfo, ser_vs_doppler_scale, ser_vs_model_mismatch, ser_vs_snr, ser_vs_timing_offset
 from nlfsc_lora.trajectories import TRAJECTORIES, hyperbolic_center_freq
@@ -844,6 +858,126 @@ def plot_paired_sweep_doppler_correction():
     plt.close(fig)
 
 
+def plot_paired_sweep_shape_generalization():
+    """Does the paired-sweep mechanism (21_paired_sweep_doppler_correction.png)
+    need hyperbolic's exact self-similarity theorem specifically, or does the
+    two-oppositely-swept-measurements idea work on any curved shape? Tested
+    directly on quadratic, sigmoid, and exponential -- none of which have a
+    closed-form Delta_down(alpha) = -q*Delta_up(alpha) the way hyperbolic
+    does (Chapter 5.2) -- by replacing the theoretical q with an empirically
+    fit ratio (paired_sweep.fit_bias_ratio) and the closed-form alpha
+    inversion with a calibration-curve lookup
+    (paired_sweep.build_alpha_calibration / acquire_doppler_scale_calibrated).
+
+    Left panel is the mechanism itself made visible: each shape's own
+    lag_down(alpha) vs. lag_up(alpha), which is exactly what the paired
+    measurement gives a receiver to work with. Hyperbolic's own points sit on
+    a perfectly straight line through the origin (the exact closed form);
+    quadratic and exponential are close to straight but not exactly, which is
+    the "empirically fit, not exact" distinction the fit_bias_ratio docstring
+    describes; sigmoid visibly bends away from a straight line at the extremes
+    of the sweep -- the same bend responsible for the right two panels'
+    finding.
+
+    Middle panel: with that empirical fit, acquiring alpha from a single
+    m=0 preamble pair and correcting a payload burst before decoding
+    restores the same near-0% SER hyperbolic gets (tests/test_paired_sweep.py
+    pins this directly for quadratic/exponential) across the whole tested
+    alpha range, at 10dB SNR, where an uncorrected receiver fails completely.
+
+    Right panel is the honest exception, not glossed over: sigmoid's alpha
+    estimate is far noisier than the other shapes near the edges of the
+    tested range (its own docstring explains why -- it lingers near the band
+    edges, so the instantaneous frequency there is nearly flat, carrying
+    little Doppler-scale information right where this measurement needs it
+    most). Multi-burst averaging (the median-combine fix Chapter 7.2 used for
+    a different, purely noise-driven problem) helps but does not fully close
+    the gap, since this is a structural property of the waveform's own shape,
+    not a rare bad measurement among mostly-good ones.
+    """
+    f_center = hyperbolic_center_freq(BANDWIDTH)
+    shapes = ["quadratic", "sigmoid", "exponential", "hyperbolic"]
+    calib_alpha = np.linspace(0.85, 1.15, 61)
+    test_alpha = np.linspace(0.9, 1.1, 21)
+    snr_db = 10.0
+    n_trials = 200
+
+    def cfgs_for(shape):
+        g_up, _ = TRAJECTORIES[shape]
+        g_down = reversed_trajectory(g_up)
+        cfg_up = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g_up, f_center=f_center)
+        cfg_down = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g_down, f_center=f_center)
+        return cfg_up, cfg_down
+
+    fig, (ax_mech, ax_ser, ax_err) = plt.subplots(1, 3, figsize=(16.5, 4.3))
+
+    for traj in shapes:
+        cfg_up, cfg_down = cfgs_for(traj)
+        base_up = base_waveform(cfg_up)
+        base_down = base_waveform(cfg_down)
+
+        lags_up = np.array([raw_lag_estimate(apply_doppler_scale(base_up, a), cfg_up) for a in calib_alpha])
+        lags_down = np.array([raw_lag_estimate(apply_doppler_scale(base_down, a), cfg_down) for a in calib_alpha])
+        ax_mech.plot(lags_up, lags_down, marker="o", ms=2.5, linewidth=1, label=traj)
+
+        q_eff = fit_bias_ratio(cfg_up, cfg_down, calib_alpha)
+        calibration = build_alpha_calibration(cfg_up, cfg_down, q_eff, calib_alpha)
+
+        rng = np.random.default_rng(0)
+        ser_cor = np.empty(len(test_alpha))
+        alpha_err_std = np.empty(len(test_alpha))
+        for i, alpha in enumerate(test_alpha):
+            # a single preamble-pair acquisition per alpha point, the same
+            # "acquire once, correct every payload burst" pattern used
+            # throughout this project (Chapter 7.2/7.4) -- not averaged over
+            # multiple acquisitions, which would understate real acquisition noise.
+            rx_pre_up = awgn(apply_doppler_scale(base_up, alpha), snr_db, rng)
+            rx_pre_down = awgn(apply_doppler_scale(base_down, alpha), snr_db, rng)
+            alpha_hat = acquire_doppler_scale_calibrated(rx_pre_up, rx_pre_down, cfg_up, cfg_down, q_eff, calibration)
+
+            errs_c = 0
+            for _ in range(n_trials):
+                m_true = int(rng.integers(0, cfg_up.M))
+                rx = awgn(apply_doppler_scale(symbol_waveform(cfg_up, m_true), alpha), snr_db, rng)
+                if fft_correlation_demod(correct_doppler_scale(rx, alpha_hat), cfg_up) != m_true:
+                    errs_c += 1
+            ser_cor[i] = errs_c / n_trials
+
+            # a separate 30-trial sweep, purely to characterize the acquisition
+            # estimator's own noise floor (right panel) -- independent of the
+            # single alpha_hat used for decoding above.
+            errs = []
+            for _ in range(30):
+                rx_pre_up = awgn(apply_doppler_scale(base_up, alpha), snr_db, rng)
+                rx_pre_down = awgn(apply_doppler_scale(base_down, alpha), snr_db, rng)
+                a_hat = acquire_doppler_scale_calibrated(rx_pre_up, rx_pre_down, cfg_up, cfg_down, q_eff, calibration)
+                errs.append(a_hat - alpha)
+            alpha_err_std[i] = np.std(errs)
+
+        floor = 1.0 / n_trials
+        ax_ser.plot(test_alpha, np.maximum(ser_cor, floor), marker="o", ms=3, label=traj)
+        ax_err.plot(test_alpha, alpha_err_std, marker="o", ms=3, label=traj)
+
+    ax_mech.axhline(0, color="k", linewidth=0.5)
+    ax_mech.axvline(0, color="k", linewidth=0.5)
+    ax_mech.set(xlabel="lag_up (samples)", ylabel="lag_down (samples)",
+                title="The paired measurement itself: lag_down vs. lag_up")
+    ax_mech.legend(fontsize=8)
+
+    ax_ser.set(xlabel="Doppler time-scale factor (alpha)", ylabel="symbol error rate", yscale="log",
+               title=f"Calibrated paired-sweep correction (SNR={snr_db:.0f}dB, {n_trials} symbols/point)")
+    ax_ser.legend(fontsize=8)
+
+    ax_err.set(xlabel="Doppler time-scale factor (alpha)", ylabel="alpha estimate std. dev.",
+               title="Acquisition noise vs. alpha (30 trials/point, 1 preamble burst)")
+    ax_err.legend(fontsize=8)
+
+    fig.suptitle("Generalizing the paired-sweep trick past hyperbolic: quadratic/exponential hold up, sigmoid doesn't (at the edges)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "23_paired_sweep_shape_generalization.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -866,6 +1000,7 @@ def main():
     plot_uav_flyover_afc()
     plot_afc_rate_of_change_limit()
     plot_paired_sweep_doppler_correction()
+    plot_paired_sweep_shape_generalization()
     print(f"Wrote figures to {OUT_DIR}")
 
 
