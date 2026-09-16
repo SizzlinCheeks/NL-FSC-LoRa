@@ -460,21 +460,32 @@ then an SER-vs-SNR sweep:
 - **`20_packet_level_validation.png`**, left panel, no CFO/Doppler:
   reproduces `14`'s waterfall shape in a full packet context, confirming
   the preamble/payload framing itself doesn't change anything.
-- Middle panel, a constant 6 kHz CFO (past this configuration's ~1953 Hz
+- Middle panel, a constant 20kHz CFO (past this configuration's ~1953Hz
   half-bin tolerance) acquired from the preamble and held through the
-  payload. Building this surfaced two real, fixed issues: (1) acquisition
-  itself needs more SNR margin than plain decoding -- searching many CFO
-  candidates against one noisy burst gives more chances for a false peak
-  (measured: 27% single-burst acquisition error at -15dB where plain
-  decoding had 0%), fixed by `run_afc_sequence(..., acquire_bursts=N)`,
-  which majority-votes acquisition across `N` preamble bursts instead of
-  trusting one (27% -> 0%, measured); and (2) `KalmanAFCLoop` needs its
-  covariance reset on acquisition, not just its point estimate -- handing
-  the acquired CFO to the tracker via direct assignment left the Kalman
-  filter's covariance at its near-infinite pre-acquisition default, so the
-  first post-acquisition measurement got absorbed with a near-total gain,
-  able to drag the estimate off a good value. `KalmanAFCLoop.set_acquired`
-  fixes this; with both fixes, `AFCLoop` and `KalmanAFCLoop` track
+  payload. 20kHz isn't an arbitrary test value -- it's this project's own
+  grounded figure from "Putting Real Numbers on the Applicability Claim":
+  published measurements put peak Doppler shift for a real 868MHz LEO
+  pass at roughly that magnitude. Building this surfaced three real,
+  fixed issues: (1) acquisition itself needs more SNR margin than plain
+  decoding -- searching many CFO candidates against one noisy burst gives
+  more chances for a false peak (measured: 27% single-burst acquisition
+  error at -15dB where plain decoding had 0%), fixed by
+  `run_afc_sequence(..., acquire_bursts=N)`, which majority-votes
+  acquisition across `N` preamble bursts instead of trusting one (27% ->
+  0%, measured); (2) `KalmanAFCLoop` needs its covariance reset on
+  acquisition, not just its point estimate -- handing the acquired CFO to
+  the tracker via direct assignment left the Kalman filter's covariance
+  at its near-infinite pre-acquisition default, so the first
+  post-acquisition measurement got absorbed with a near-total gain, able
+  to drag the estimate off a good value, fixed by `KalmanAFCLoop.set_acquired`;
+  and (3), found only once this test was updated to the real 20kHz
+  magnitude, the acquisition search span has to actually cover the real
+  problem -- the original 6kHz test value sat comfortably inside the old
+  +/-10kHz search span (an easier problem than the real one, by
+  accident), and at 20kHz that span misses the true offset entirely,
+  failing every payload symbol at every SNR until widened to +/-25kHz
+  (with the search step coarsened from 100Hz to 250Hz, measured to cost
+  no accuracy). With all three fixes, `AFCLoop` and `KalmanAFCLoop` track
   identically here.
 - Right panel, a UAV-style sign-reversing Doppler (same
   closest-point-of-approach curve as `18`/`19`). This test originally held

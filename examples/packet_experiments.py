@@ -116,7 +116,8 @@ def run_packet(cfg, dg, n_payload: int, true_cfo_sequence, snr_db: float, seed: 
     return decoded[N_PREAMBLE:], payload, tracked, residual
 
 
-def _ser_sweep(cfg, dg, n_payload, cfo_fn, snr_range, n_trials, loop_factory=None, acquire_span=10000.0):
+def _ser_sweep(cfg, dg, n_payload, cfo_fn, snr_range, n_trials, loop_factory=None,
+                acquire_span=10000.0, acquire_step=100.0):
     """Mean SER across n_trials packets at each SNR point. cfo_fn(n_total) builds
     the true_cfo_sequence for a packet of that total length (preamble+payload)."""
     n_total = N_PREAMBLE + n_payload
@@ -127,7 +128,7 @@ def _ser_sweep(cfg, dg, n_payload, cfo_fn, snr_range, n_trials, loop_factory=Non
         for t in range(n_trials):
             loop = loop_factory() if loop_factory is not None else None
             decoded, payload, _tr, _res = run_packet(cfg, dg, n_payload, true_cfo_sequence, snr_db, seed=t,
-                                                       loop=loop, acquire_span=acquire_span)
+                                                       loop=loop, acquire_span=acquire_span, acquire_step=acquire_step)
             errors += int(np.sum(decoded != payload))
             total += n_payload
         ser[i] = errors / total
@@ -162,13 +163,30 @@ def test1_no_doppler():
 
 def test2_constant_doppler():
     """Test 2: exact same packet setup as test 1, but with a constant CFO/Doppler
-    offset (6000 Hz, well beyond this SF/BW's ~1953 Hz native half-bin
-    tolerance) across the whole packet, acquired from the preamble and held by
-    the tracking loop through the payload. Both AFCLoop and KalmanAFCLoop."""
+    offset across the whole packet, acquired from the preamble and held by the
+    tracking loop through the payload. Both AFCLoop and KalmanAFCLoop.
+
+    const_cfo=20000 Hz is not an arbitrary round number -- it's this
+    project's own grounded-in-real-numbers finding ("Putting Real Numbers on
+    the Applicability Claim"): published measurements put peak Doppler shift
+    for a 868MHz LoRa-band LEO pass at ~600km around +/-20kHz. The version of
+    this test that used 6000 Hz (comfortably inside the *old* 10kHz
+    acquisition search span) was accidentally testing an easier problem than
+    the real one -- found directly by checking, not assumed: at 20kHz, the
+    old 10kHz acquire_span misses the true CFO entirely and every packet
+    fails (900/900 payload symbols), at *any* SNR, because the search never
+    looks in the right place. Widening acquire_span to 25000 (with
+    acquire_step widened to 250 -- measured to cost no accuracy, just fewer
+    candidates) fixes it outright: 0/900 errors from 40dB down through 0dB.
+    This was a real gap in what this project had tested, not a tracking
+    failure -- the tracking loop and acquisition machinery were already
+    correct, they just needed a search window sized to the real problem."""
     print("\n=== Test 2: constant CFO/Doppler ===")
     cfg, dg = make_cfg("hyperbolic")
-    const_cfo = 6000.0
-    print(f"constant CFO = {const_cfo} Hz (half-bin tolerance at this SF/BW is only {HALF_BIN_HZ:.0f} Hz)")
+    const_cfo = 20000.0
+    acquire_span, acquire_step = 25000.0, 250.0
+    print(f"constant CFO = {const_cfo} Hz (half-bin tolerance at this SF/BW is only {HALF_BIN_HZ:.0f} Hz; "
+          f"~20kHz is this project's own grounded real-world LEO-pass peak, not an arbitrary test value)")
 
     cfo_fn = lambda n: np.full(n, const_cfo)
 
@@ -178,18 +196,20 @@ def test2_constant_doppler():
         n_trials_check = 100
         seq = cfo_fn(N_PREAMBLE + N_PAYLOAD)
         for t in range(n_trials_check):
-            decoded, payload, _tr, _res = run_packet(cfg, dg, N_PAYLOAD, seq, snr_db=40.0, seed=t, loop=factory())
+            decoded, payload, _tr, _res = run_packet(cfg, dg, N_PAYLOAD, seq, snr_db=40.0, seed=t, loop=factory(),
+                                                       acquire_span=acquire_span, acquire_step=acquire_step)
             total_errors += int(np.sum(decoded != payload))
         print(f"{name}: noiseless-ish (40dB) correctness check: {total_errors} errors "
               f"out of {n_trials_check * N_PAYLOAD} across {n_trials_check} packets")
         assert total_errors == 0, f"Test 2 baseline should decode correctly with {name}"
 
-    snr_range = np.arange(-30, -8, 2)
+    snr_range = np.arange(-22, 2, 2)  # spans the real transition at this (realistic) magnitude
     n_trials = 150
     results = {}
     for name, factory in [("AFCLoop", lambda: AFCLoop(gain=0.3)), ("KalmanAFCLoop", lambda: KalmanAFCLoop(measurement_noise=measurement_noise_for(cfg)))]:
         t0 = time.time()
-        ser = _ser_sweep(cfg, dg, N_PAYLOAD, cfo_fn, snr_range, n_trials, loop_factory=factory)
+        ser = _ser_sweep(cfg, dg, N_PAYLOAD, cfo_fn, snr_range, n_trials, loop_factory=factory,
+                          acquire_span=acquire_span, acquire_step=acquire_step)
         print(f"{name} SER sweep done in {time.time()-t0:.1f}s")
         results[name] = ser
     return snr_range, results
@@ -372,7 +392,7 @@ def plot_all(t1, t2, t3, t4):
 
     for name, ser in res2.items():
         axes[1].plot(snr2, np.maximum(ser, floor2), marker="o", ms=4, label=name)
-    axes[1].set(xlabel="SNR (dB)", yscale="log", title="Test 2: constant CFO (6 kHz)")
+    axes[1].set(xlabel="SNR (dB)", yscale="log", title="Test 2: constant CFO (20 kHz)")
     axes[1].legend(fontsize=8)
 
     for name, ser in res3.items():

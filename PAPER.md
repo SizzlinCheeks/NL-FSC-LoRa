@@ -498,11 +498,13 @@ graded only on the payload.
 **7.1 No Doppler.** Baseline: 200 packets, 6000 payload symbols, zero
 errors at 40 dB SNR; the SER-vs-SNR sweep reproduces §4's waterfall shape.
 
-**7.2 Constant CFO, acquired from the preamble.** A 6 kHz offset (past
+**7.2 Constant CFO, acquired from the preamble.** A 20 kHz offset (past
 this configuration's half-bin tolerance, $\approx 1953$ Hz) is acquired
 via `sync.py::joint_cfo_symbol_search` on the preamble and held through
-the payload by the tracking loop. Two findings, both from testing rather
-than assumed:
+the payload by the tracking loop. 20 kHz, not an arbitrary round test
+value, is §8.1's own grounded figure: published measurements put peak
+Doppler shift for a real 868 MHz LEO pass at roughly that magnitude.
+Three findings, all from testing rather than assumed:
 
 - *Acquisition needs more SNR margin than decoding.* Searching many CFO
   candidates against one noisy burst gives more chances for a
@@ -523,6 +525,21 @@ than assumed:
   gain, able to drag the estimate off a good value. `KalmanAFCLoop.set_acquired`
   fixes this by resetting covariance alongside the point estimate; with it,
   `AFCLoop` and `KalmanAFCLoop` track identically on this test.
+- *The acquisition search span has to actually cover the real problem.*
+  This test originally ran at 6 kHz — comfortably inside the acquisition
+  search's original $\pm10$ kHz span, and, per §8.1, an easier problem
+  than the real one. At the grounded 20 kHz value the old span misses the
+  true offset outright: every payload symbol fails, at every SNR, because
+  the search never looks in the right place — not a tracking failure, a
+  search-window sizing error. Widening the span to $\pm25$ kHz (with the
+  search step coarsened from 100 Hz to 250 Hz, measured to cost no
+  accuracy) fixes it completely.
+
+With that fix, this test holds up at the real 20 kHz magnitude exactly as
+it did at the earlier, arbitrary 6 kHz one: error-free down to
+$\approx-12$ dB SNR, a transition through roughly $-14$ to $-20$ dB, both
+trackers tracking identically throughout — the same waterfall shape,
+now correctly centered on the grounded problem rather than an easier one.
 
 **7.3 A sign-reversing (UAV-style) Doppler.** Same closest-point-of-approach
 curve as §6.4, $t_0=90$ (peak rate $\approx 33$ Hz/burst), comfortably under

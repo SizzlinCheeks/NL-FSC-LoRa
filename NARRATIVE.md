@@ -836,11 +836,25 @@ predicted it would.
 
 ### 7.2 A constant Doppler shift, acquired from the preamble
 
-Add a constant 6 kHz offset — comfortably past this configuration's
-half-bin tolerance of about 1953 Hz — across the whole packet, and let the
-receiver actually earn its correction instead of being handed the answer:
-acquire the CFO from the preamble (`sync.py`'s `joint_cfo_symbol_search`),
-then hold it with the tracking loop through the payload.
+Add a constant offset across the whole packet, and let the receiver
+actually earn its correction instead of being handed the answer: acquire
+the CFO from the preamble (`sync.py`'s `joint_cfo_symbol_search`), then
+hold it with the tracking loop through the payload. The offset itself is
+20 kHz, not a round test number but this project's own finding from
+"Putting Real Numbers on the Applicability Claim": published measurements
+put peak Doppler shift for a real 868 MHz LEO pass at roughly that value.
+
+That change in magnitude caught a real gap the moment it was tried: this
+test used to run at 6 kHz, comfortably inside the acquisition search's
+old ±10 kHz span — accidentally an easier problem than the one motivating
+this whole chapter. At the real 20 kHz, that old span doesn't even
+contain the true offset, so every single packet fails, at every SNR
+tested, not because tracking breaks but because the search is looking in
+the wrong place entirely. Widening the span to ±25 kHz (and, since more
+candidates cost more time, coarsening the search step from 100 Hz to
+250 Hz — checked directly to cost nothing in accuracy) fixes it outright.
+Nothing about the acquisition or tracking *logic* was wrong; it had just
+never been asked to search as wide as the real problem needs.
 
 Building this test surfaced something worth knowing: acquisition itself
 is less SNR-robust than ordinary decoding. Searching many candidate CFOs
@@ -874,6 +888,14 @@ post-acquisition measurement got absorbed with a near-total Kalman gain —
 enough to drag the estimate away from a good acquired value. The fix,
 `KalmanAFCLoop.set_acquired`, resets the covariance along with the
 estimate.
+
+With the search-span fix, this test now holds up at the real, grounded
+20 kHz magnitude the same way it used to at the arbitrary 6 kHz one:
+clean, error-free decoding down to around −12 dB SNR, a transition
+through roughly −14 to −20 dB, and both trackers landing on top of each
+other throughout — not a smaller or shakier margin for having moved to
+the real number, just the same waterfall shape, correctly centered on
+the problem this chapter actually set out to solve.
 
 ### 7.3 A Doppler that reverses sign
 
