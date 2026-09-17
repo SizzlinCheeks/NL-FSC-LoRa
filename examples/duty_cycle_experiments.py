@@ -233,7 +233,7 @@ def experiment_predicted_vs_blind_acquisition():
 
 def plot_duty_cycle_findings(rows, gaps_s, true_cfos, success_blind, success_predicted, span, half_bin, true_rate):
     os.makedirs(OUT_DIR, exist_ok=True)
-    fig, (ax_table, ax_acq) = plt.subplots(1, 2, figsize=(13, 4.5))
+    fig, (ax_table, ax_acq) = plt.subplots(1, 2, figsize=(15, 4.8))
 
     if rows:
         labels = [f"SF{r['sf']}/{int(r['bw']/1e3)}k/{r['payload_len']}B" for r in rows[::2]]
@@ -258,8 +258,8 @@ def plot_duty_cycle_findings(rows, gaps_s, true_cfos, success_blind, success_pre
                     label=f"gap where true drift = span ({span_edge_gap:.0f}s)")
     ax_acq.set(xlabel="duty-cycle gap since last packet (s)", ylabel="acquisition success rate",
                ylim=(-0.05, 1.05),
-               title=f"Same-width (+/-{span:.0f}Hz, alias-safe) acquisition, blind vs. rate-predicted center\n"
-                     f"(SF9/125kHz, true rate={true_rate:.1f}Hz/s worst-case LEO, SNR=-10dB)")
+               title=f"Same-width (+/-{span:.0f}Hz) acquisition: blind vs. rate-predicted center\n"
+                     f"(SF9/125kHz, rate={true_rate:.1f}Hz/s, SNR=-10dB)")
     ax_acq.legend(fontsize=8)
     ax2 = ax_acq.twiny()
     ax2.set_xlim(ax_acq.get_xlim())

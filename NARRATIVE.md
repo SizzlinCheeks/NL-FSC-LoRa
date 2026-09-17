@@ -1419,6 +1419,190 @@ shape-dependent risk of the kind sigmoid shows here.
 
 ---
 
+## Testing Against the Real Thing: LoRaWAN Cross-Validation
+
+Everything up to here has been checked against itself: this project's own
+transmitter and this project's own receiver, agreeing with each other. That
+proves internal consistency, not real-world compatibility. This section
+checks against something independent — `lora_phy`
+([pyLoRaPHY](https://github.com/myzhang1029/pyLoRaPHY), MIT-licensed, a
+well-tested Python port of the widely-used jkadbear/LoRaPHY reference) — a
+full, real LoRa PHY implementation: real chirp generation, real preamble and
+sync-word framing, real Hamming FEC, interleaving, whitening, Gray coding,
+and CRC16. It's an optional dependency (`pip install .[refcheck]`, pinned to
+0.2.0 — see `pyproject.toml` for why not latest), and every test that uses it
+skips cleanly if it isn't installed.
+
+One thing has to be said up front, because it bounds what "cross-validation"
+can even mean here: this project's actual contribution — nonlinear
+trajectories, HFM's self-similarity, the paired-sweep correction — cannot be
+tested this way at all. Real LoRa hardware, and every real reference
+implementation of it, hard-codes the linear chirp. There is no real system
+to check a hyperbolic trajectory against, because no real system generates
+one. What *can* be tested for real is the narrowband CFO/Doppler tracking
+(Chapter 6's `AFCLoop`/`KalmanAFCLoop`/`full_symbol_cfo_estimate`), which
+works identically for linear chirps too — so everything below uses
+`g=linear`, the one shape with a real-world counterpart.
+
+### Does this project's own math match a real implementation?
+
+The cleanest comparison: this project's base (`m=0`) up-chirp against
+`lora_phy`'s own chirp construction. They match to numerical precision —
+once a small, fully-explained discrepancy is corrected for first. `lora_phy`
+evaluates instantaneous frequency at a sample grid offset by exactly
+`bandwidth / (2 * n_samples)` from this project's own `u = n/n_samples`
+convention — a constant, symbol-independent frequency offset, not a shape
+difference. Checked directly: that offset alone accounts for the *entire*
+correlation gap measured before correcting for it, via the same CFO-loss
+sinc formula from §5.1. Benign, and now documented
+(`tests/test_reference_crossval.py::test_base_waveform_matches_reference_exactly`).
+
+A cyclically-shifted symbol (`m != 0`) is a different, more interesting
+story. `chirp.py`'s own docstring has always been explicit that its
+construction — roll the *sampled* base waveform — is "a description of the
+model in this project, not a claim about the internals of any particular
+commercial LoRa chipset." Checked directly against a real implementation,
+that disclaimer turns out to matter: real LoRa instead generates each symbol
+as a closed-form chirp with a *shifted starting frequency*, wrapping
+mid-symbol — not the same waveform as a sample-domain roll. Correlation
+between the two constructions dips to about 0.92 near mid-alphabet ($m
+\approx M/2$), a real, bounded, ~0.7dB-scale effect around the wrap point,
+not noise.
+
+The headline result is what happens next: does that difference ever cost a
+decoding decision? Checked directly, across the entire symbol alphabet,
+noiselessly, both directions — `lora_phy`'s own waveform decoded by this
+project's receiver, and this project's own waveform decoded by `lora_phy`'s
+— every symbol comes back correct, every time. The wrap-construction
+difference costs matched-filter *magnitude*; it never costs *correctness*,
+because the loss is shared closely enough across neighboring symbol
+hypotheses that the `argmax` decision doesn't move. Pushed one step further
+— does it cost anything once there's real noise, not just a noiseless
+`argmax`? — a self-consistent SER (this project's own tx and rx) and a cross
+SER (`lora_phy`'s tx, this project's rx) at $-10$dB SNR land within 5% of
+each other: the same regime, not a different one
+(`test_cross_decode_ser_matches_self_consistent_ser_at_moderate_snr`).
+
+### Real channel coding, not just symbol counting
+
+Every packet test up to Chapter 7 grades "payload symbol error rate": did
+the decoded chirp shift match the transmitted one. Real LoRaWAN never ships
+raw symbols — each payload byte goes through whitening, Hamming FEC,
+diagonal interleaving, and Gray coding before modulation, and a CRC16
+either passes or fails on the whole packet at the receiver. None of that
+machinery is built into this project by design (Chapter 7's own note: the
+preamble/payload framing is "not a bit-accurate reproduction of the real
+sync-word convention," since the trajectory-shape question this project
+studies doesn't depend on it) — but it's exactly the machinery a real
+receiver's success or failure actually turns on, so it's worth checking
+against directly rather than assumed to not matter.
+
+`examples/lorawan_experiments.py` wires this project's own Doppler tracking
+around `lora_phy`'s `encode()`/`decode()` — the real Hamming/interleave/
+whiten/Gray/CRC layer, turning a payload into the exact chirp-shift stream
+real hardware would transmit, and turning decoded shifts back into payload
+bytes plus a genuine CRC pass/fail. Everything *around* that layer —
+preamble, Doppler profile, acquisition, per-burst tracking — reuses this
+project's own already-validated pieces from Chapters 6–7. Each burst's
+waveform is built with `lora_phy`'s own chirp construction, not this
+project's approximation of it, deliberately: this test is a check of the
+wrap-construction finding above holding up under real Doppler and real
+channel coding together, not an assumption carried over from the
+single-symbol result.
+
+![Real LoRaWAN-framed packet CRC pass rate vs SNR: constant-CFO and UAV-reversal Doppler, tracking vs a static one-time correction](pictures/24_lorawan_packet_pass_rate.png)
+
+*(Left and middle panels, 12-byte payload, 48 total bursts.)* Clean
+waterfalls, tracking and a static (acquire-once) correction landing right on
+top of each other — for *both* the constant-CFO and the sign-reversing
+UAV-style profile. That's not a null result to explain away: it's short. A
+12-byte LoRaWAN uplink doesn't run long enough for even a full Doppler sign
+reversal to drift meaningfully away from its acquired value within the
+packet, the same reason Chapter 7's own Test 3 uses a 712-symbol payload
+instead of Tests 1–2's short one — this is that same finding, now visible at
+the packet-CRC level and tied to a realistic uplink size, not an argument
+against tracking.
+
+*(Right panel, 150-byte payload, 368 total bursts, same UAV-reversal
+profile.)* The dramatic version of the same finding. Static correction never
+passes a single packet's CRC, at *any* SNR tested, all the way up to +5dB —
+by the time the reversal has carried the CFO away from its acquired value,
+Hamming FEC can't correct enough of the resulting symbol errors and the CRC
+fails, packet after packet. Active tracking (`AFCLoop` or `KalmanAFCLoop`)
+holds a clean waterfall down to roughly $-8$ to $-10$dB before degrading —
+the same kind of transition this project's other packet tests show,
+now confirmed to survive real Hamming FEC, interleaving, whitening, and a
+CRC16 check, not just a symbol-error count.
+
+### Does tracking mean anything between packets?
+
+Real LoRaWAN doesn't send packets back-to-back. EU868-style sub-bands cap
+transmit duty cycle at around 1%, so a device that just finished an uplink
+has to stay silent for roughly 99× its own airtime before the next one.
+`examples/duty_cycle_experiments.py` puts real numbers on what that gap
+costs, using `lora_phy`'s own `time_in_air()` and this project's own
+grounded LEO Doppler rate range (270–640 Hz/s, from "Putting Real Numbers on
+the Applicability Claim") across SF7–SF12 and two payload sizes:
+
+![Between-packet Doppler drift under a 1% duty cycle vs. this project's own decode thresholds, and rate-predicted acquisition recentering recovering jumps a blind search misses](pictures/25_duty_cycle_reacquisition.png)
+
+*(Left panel.)* Across nearly every configuration tested, the CFO drift
+that accumulates during even the *minimum* duty-cycle gap comfortably
+exceeds this project's own half-bin decode-capture tolerance for that
+configuration. Concretely: a receiver that simply held onto its last
+tracked CFO estimate from the previous packet, with no fresh acquisition,
+would already fail to decode the very first symbol of the next one, in
+nearly every realistic case. Chapters 6–7's continuous, burst-to-burst
+tracking is real and validated *within* one packet; it does not, by itself,
+extend *across* packets once duty-cycle spacing dominates. Every new packet
+needs its own acquisition — exactly how real LoRaWAN receivers already
+work (fresh preamble detection and sync per uplink), not a gap this
+project's own tracking claim was ever making. For several slower
+configurations (large SF, long payload, the faster end of the LEO rate
+range), drift also exceeds this project's own 25kHz acquisition search span
+outright, so even a *fresh*, blind, zero-centered search would miss the
+true CFO entirely.
+
+*(Right panel.)* The one genuinely new capability worth adding, and tested
+directly rather than just proposed: does extrapolating the *previous*
+packet's own tracked rate across the gap — reusing `KalmanAFCLoop`'s
+existing predict-only step, `loop.update(None)`, called once per
+gap-equivalent burst, no new tracking math — and re-centering a
+*same-width* acquisition search on that prediction recover the cases a
+blind, zero-centered search misses? Yes, cleanly: blind search's success
+rate collapses to 0% within a few seconds of gap (drift immediately
+overruns even a modest, alias-safe search window — see below), while the
+rate-predicted center recovers a substantial, consistent fraction of jumps
+throughout the tested range, at no extra search cost (same window width,
+just moved). The prediction is deliberately not fed the exact true rate — a
+$\pm5\%$ relative jitter models the previous packet's own residual
+rate-tracking error — so the recovered fraction (30–50%, not the near-100%
+a noiseless point prediction would suggest) is the honest cost of that
+realistic imperfection, not a best-case number.
+
+**A real methodological pitfall, caught while building this, worth
+documenting rather than quietly fixing.** The first version of this
+experiment used the same wide $\pm25$kHz acquisition span this project's own
+Test 2 validated — and produced a confusing result: a blind search
+succeeding *more* often than the correctly re-centered one. The cause
+wasn't the prediction; it was the search. `joint_cfo_symbol_search` jointly
+searches (symbol, CFO), and at SF9/125kHz's bin width (244Hz), a $\pm25$kHz
+span covers roughly 100 bin-widths — 100 (symbol, CFO) *alias* hypotheses,
+any of which can score nearly as well as the true one. Confirmed directly,
+not inferred: a wide search reproducibly locked onto a wrong symbol two bins
+from the truth, *even at 40dB SNR* — a systematic aliasing failure, not a
+noise problem. Test 2's own SF7/500kHz configuration never exposed this
+because its bin width (3906Hz) packs roughly 16× fewer aliases into the same
+nominal span — meaning a fixed acquisition span in Hz was never actually a
+shape/SF-independent design choice; it was tuned safe for one configuration
+and silently risky for another. The fix, a narrow ($\pm1500$Hz, about 6
+bin-widths) alias-safe span, removes the ambiguity — and turns out to make
+the actual point better anyway: it's exactly the precision a *correctly
+centered* search needs, no wider, which is the whole case for prediction
+over blind guessing in the first place.
+
+---
+
 ## Where to go from here
 
 - `PAPER.md` — the same results with every proof given in full, organized

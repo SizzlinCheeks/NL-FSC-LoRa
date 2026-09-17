@@ -113,6 +113,15 @@ pytest                       # correctness checks (dechirp, demod, metrics)
 python examples/run_experiments.py   # writes comparison plots to examples/output/
 ```
 
+Optional: `pip install -e .[refcheck]` (pinned to `lora_phy==0.2.0`, a real
+LoRaWAN PHY reference implementation) enables cross-validation against real
+LoRa math and framing --
+`python examples/lorawan_experiments.py`,
+`python examples/duty_cycle_experiments.py`, and
+`tests/test_reference_crossval.py`/`test_lorawan_framing.py`/`test_duty_cycle.py`.
+Everything else works without it; those tests skip cleanly if it's absent.
+See "Cross-validation against a real LoRaWAN PHY" below.
+
 `examples/run_experiments.py` reproduces the comparison framework described
 above for `linear`, `quadratic`, `sigmoid`, `sinusoidal`, and `exponential`
 trajectories at SF7 / 125 kHz (a standard LoRa configuration):
@@ -616,6 +625,69 @@ rather than duplicated here:
   averaging only partly fixes. `23_paired_sweep_shape_generalization.png`.
   See NARRATIVE.md's "Does it need hyperbolic specifically?" / PAPER.md
   §10.1.
+- **Cross-validated against a real LoRaWAN PHY.** Everything above checks
+  this project's own transmitter against its own receiver. `lora_phy`
+  (pyLoRaPHY, an independent, MIT-licensed real LoRa PHY implementation --
+  see "Cross-validation against a real LoRaWAN PHY" below) is a genuine
+  outside check: this project's baseline waveform matches it to numerical
+  precision (once a benign frequency-grid convention is corrected for), and
+  full decode correctness holds across the entire symbol alphabet,
+  bidirectionally, despite a real, characterized difference in how the two
+  systems construct a cyclically-shifted symbol. Doppler tracking (Chapters
+  6-7) then wrapped around real Hamming FEC/interleaving/whitening/CRC16
+  framing and graded by packet-level CRC pass rate -- not just symbol error
+  rate -- shows the same tracking-vs-static story Chapter 6 already found,
+  now confirmed to survive real channel coding intact. See "Cross-validation
+  against a real LoRaWAN PHY" below / NARRATIVE.md's "Testing Against the
+  Real Thing: LoRaWAN Cross-Validation" / PAPER.md §11.
+
+## Cross-validation against a real LoRaWAN PHY
+
+Optional (`pip install -e .[refcheck]`, pinned to `lora_phy==0.2.0` -- see
+`pyproject.toml` for why not latest). This project's own contribution
+(nonlinear trajectories) has no real reference to check against -- no real
+LoRa chipset generates a hyperbolic chirp -- so this only tests `g=linear`
+and the narrowband Doppler tracking (Chapters 6-7), which applies to linear
+chirps identically.
+
+```
+pip install -e .[refcheck]
+pytest tests/test_reference_crossval.py tests/test_lorawan_framing.py tests/test_duty_cycle.py
+python examples/lorawan_experiments.py     # writes 24_lorawan_packet_pass_rate.png
+python examples/duty_cycle_experiments.py  # writes 25_duty_cycle_reacquisition.png
+```
+
+- **`tests/test_reference_crossval.py`** -- this project's baseline (`m=0`)
+  waveform matches `lora_phy`'s own chirp construction to numerical
+  precision once a benign, constant frequency-grid offset is corrected for.
+  A cyclically-shifted symbol (`m != 0`) is a different story: this
+  project's cyclic-sample-roll construction isn't the same waveform as real
+  LoRa's closed-form shifted-start chirp (correlation dips to ~0.92 near
+  mid-alphabet) -- but across the full symbol alphabet, noiselessly,
+  bidirectionally, it never costs a wrong decode. Self-consistent and cross
+  SER land within 5% of each other at -10dB SNR.
+- **`24_lorawan_packet_pass_rate.png`** -- this project's own Doppler
+  tracking wrapped around `lora_phy`'s real Hamming FEC/interleave/whiten/
+  Gray/CRC16 layer, graded by packet CRC pass rate. At a realistic short
+  payload (12B), tracking and a static (acquire-once) correction are
+  indistinguishable -- the packet isn't long enough for even a UAV-style
+  Doppler reversal to drift away from its acquired value. At 150B, the same
+  profile separates them sharply: static correction fails every packet's
+  CRC at every SNR tested up to +5dB; active tracking holds a clean
+  waterfall to roughly -8 to -10dB.
+- **`25_duty_cycle_reacquisition.png`** -- real time-on-air
+  (`lora_phy::time_in_air`) and EU868-style 1% duty-cycle gaps, compared
+  against this project's own grounded LEO Doppler rate range. Drift during
+  even the *minimum* duty-cycle gap exceeds the half-bin decode tolerance in
+  nearly every configuration tested: continuous within-packet tracking
+  doesn't extend across packets once duty-cycle spacing dominates -- every
+  new packet needs its own acquisition. Extrapolating the previous packet's
+  tracked rate across the gap (reusing `KalmanAFCLoop`'s own predict-only
+  step) and re-centering a same-width acquisition search on that prediction
+  recovers a real, substantial fraction of jumps a blind search finds none
+  of, at no extra search cost. A real aliasing pitfall in
+  `joint_cfo_symbol_search` at wide search spans (caught directly, not
+  assumed away) is documented in the script's own module docstring.
 
 ## Extending it
 

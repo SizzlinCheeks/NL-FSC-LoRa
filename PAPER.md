@@ -652,6 +652,9 @@ Implementation: `examples/packet_experiments.py::test4_wideband_doppler_scale`;
 | End-to-end packet decode under Doppler | §7 | `examples/packet_experiments.py` | (SER-vs-SNR sweeps; no dedicated pytest, see script's own correctness assertions) |
 | DHFM-style paired-sweep Doppler correction | §10 | `nlfsc_lora/paired_sweep.py` | `tests/test_paired_sweep.py::test_acquire_and_correct_recovers_full_decode_accuracy_across_full_m_range` |
 | Paired-sweep generalization past hyperbolic | §10.1 | `paired_sweep.py::fit_bias_ratio`, `acquire_doppler_scale_calibrated` | `test_paired_sweep.py::test_calibrated_acquisition_restores_full_accuracy_for_well_behaved_shapes`, `test_calibrated_acquisition_degrades_for_sigmoid_near_the_edge_of_the_alpha_range` |
+| Baseline cross-validated against a real LoRa PHY | §11.1 | -- | `test_reference_crossval.py::test_full_alphabet_noiseless_cross_decode_is_exact` |
+| Doppler tracking survives real Hamming/CRC framing | §11.2 | `examples/lorawan_experiments.py` | `test_lorawan_framing.py::test_static_correction_baseline_does_worse_than_tracking_under_uav_reversal` |
+| Between-packet drift vs. duty cycle; rate-predicted reacquisition | §11.3 | `examples/duty_cycle_experiments.py` | `test_duty_cycle.py::test_rate_predicted_acquisition_recovers_jump_a_blind_search_misses` |
 
 ## 8. Comparison with standard LoRa, and when this applies
 
@@ -932,6 +935,99 @@ Implementation: `nlfsc_lora/paired_sweep.py` (`fit_bias_ratio`,
 
 ---
 
+## 11. LoRaWAN cross-validation
+
+Every prior result checks this project's own transmitter against its own
+receiver. This section checks against an independent implementation instead:
+`lora_phy` ([pyLoRaPHY](https://github.com/myzhang1029/pyLoRaPHY), MIT, a
+Python port of jkadbear/LoRaPHY) — real chirp generation, real preamble/
+sync-word framing, Hamming FEC, interleaving, whitening, Gray coding, CRC16.
+Optional dependency (`pip install .[refcheck]`, pinned to 0.2.0 — see
+`pyproject.toml`); every test using it skips cleanly if absent. Scope: only
+`g=linear` is tested this way — no real system generates a hyperbolic
+trajectory, so the paired-sweep/self-similarity results have no real
+reference to check against. The narrowband tracking of §6–7 does, since it
+applies identically to linear chirps.
+
+**11.1 Baseline correctness.** `base_waveform` matches `lora_phy`'s own
+chirp construction to numerical precision once a benign, constant
+frequency-grid offset ($\text{bandwidth}/(2 \cdot n_{\text{samples}})$,
+explained by the standard CFO-loss sinc formula of §5.1) is corrected for.
+Cyclically-shifted symbols ($m \neq 0$) diverge from the reference in a
+real, bounded way: this project's cyclic-sample-roll construction (as
+`chirp.py`'s own docstring already disclaims) is not the closed-form
+shifted-start chirp real LoRa generates, and correlation between the two
+dips to $\approx 0.92$ near $m \approx M/2$. Checked directly rather than
+assumed benign: across the full alphabet, noiselessly, bidirectionally
+(`lora_phy`'s waveform decoded by this project's receiver and vice versa),
+every symbol decodes correctly regardless — the difference costs
+matched-filter magnitude, never the `argmax` decision. At $-10$dB SNR,
+self-consistent and cross SER land within 5% of each other.
+(`tests/test_reference_crossval.py`.)
+
+**11.2 Real channel coding.** `examples/lorawan_experiments.py` wraps
+Chapter 6's tracking (`AFCLoop`/`KalmanAFCLoop`/`full_symbol_cfo_estimate`)
+around `lora_phy`'s `encode()`/`decode()` — real Hamming/interleave/whiten/
+Gray/CRC16 — grading packet-level CRC pass rate instead of symbol error
+rate. At a realistic short payload (12B, 48 bursts), tracking and a static
+(acquire-once) correction are indistinguishable for both a constant-CFO and
+a sign-reversing (UAV-style) profile: the packet isn't long enough for even
+a full reversal to drift meaningfully from its acquired value, the same
+reason §7's own Test 3 uses a 712-symbol payload instead of Tests 1-2's
+short one. At 150B (368 bursts), the same UAV profile separates the two
+sharply: static correction fails every packet's CRC at every SNR tested
+(up to $+5$dB); active tracking holds a clean waterfall to $\approx
+-8$ to $-10$dB before degrading — confirming §7's symbol-level tracking
+value survives real Hamming FEC, interleaving, whitening, and a CRC16
+check intact, not just a symbol-error count.
+(`examples/output/24_lorawan_packet_pass_rate.png`,
+`tests/test_lorawan_framing.py`.)
+
+**11.3 Between-packet duty cycling.** `examples/duty_cycle_experiments.py`
+computes real time-on-air (`lora_phy::time_in_air`) and EU868-style 1%
+duty-cycle gaps (gap $\geq 99\times$ on-air time) across SF7-SF12,
+125/500kHz, and two payload sizes, comparing the resulting CFO drift
+(this project's own grounded 270-640 Hz/s LEO rate range $\times$ gap)
+against this configuration's half-bin decode tolerance and this project's
+own 25kHz acquisition span. Finding: drift during even the *minimum*
+duty-cycle gap exceeds the half-bin tolerance in nearly every configuration
+tested — continuous within-packet tracking (§6-7) does not, by itself,
+extend across packets once duty-cycle spacing dominates; every new packet
+needs its own acquisition, matching how real LoRaWAN receivers already
+operate. For several slower configurations, drift also exceeds the 25kHz
+span outright.
+
+Tested directly rather than left as an implication: does extrapolating the
+previous packet's tracked rate across the gap (`KalmanAFCLoop`'s own
+predict-only step, `update(None)`, called once per gap-equivalent burst)
+and re-centering a same-width acquisition search on that prediction recover
+jumps a blind, zero-centered search misses? Yes — blind search's success
+rate collapses to 0% within a few seconds of gap; the rate-predicted center
+(fed a $\pm5\%$ relative rate-error jitter, modeling realistic residual
+tracking error rather than an exact point prediction) recovers a
+consistent 30-50% of jumps throughout the tested range, at no extra search
+cost.
+
+A real methodological pitfall surfaced building this: the first version
+used this project's own validated $\pm25$kHz acquisition span, and showed
+blind search succeeding *more* than the correctly re-centered one.
+`joint_cfo_symbol_search` jointly searches (symbol, CFO); at SF9/125kHz's
+bin width (244Hz), a $\pm25$kHz span covers $\approx 100$ bin-widths, i.e.
+$\approx 100$ (symbol, CFO) alias hypotheses that can outscore the true
+one -- confirmed directly, not inferred: a wide search reproducibly locked
+onto a wrong symbol two bins from the truth *even at 40dB SNR*, a
+systematic aliasing failure, not noise. §7's own Test 2 (SF7/500kHz, bin
+width 3906Hz) never exposed this: $\approx 16\times$ fewer aliases in the
+same nominal span. A fixed acquisition span in Hz is therefore not a
+shape/SF-independent design choice; it was tuned safe for one
+configuration only. Fix: a narrow ($\pm1500$Hz, $\approx 6$ bin-widths)
+alias-safe span, which is also the more honest test -- exactly the
+precision a correctly-centered search needs, no wider.
+(`examples/output/25_duty_cycle_reacquisition.png`,
+`tests/test_duty_cycle.py`.)
+
+---
+
 ## References
 
 - Vangelista, L. "Frequency Shift Chirp Modulation: The LoRa Modulation."
@@ -966,6 +1062,12 @@ Implementation: `nlfsc_lora/paired_sweep.py` (`fit_bias_ratio`,
   literature search rather than independently re-derived, so treat the
   specific Hz/s figure as an order-of-magnitude estimate, not a precise
   citation to one paper's stated value.)
+- jkadbear. *LoRaPHY* (MATLAB/Python LoRa PHY reference implementation),
+  https://github.com/jkadbear/LoRaPHY, MIT license; ported to Python as
+  *pyLoRaPHY* by Zhang, M. and Vennam, R.,
+  https://github.com/myzhang1029/pyLoRaPHY (packaged as `lora_phy` on PyPI).
+  The independent reference implementation §11's cross-validation is checked
+  against.
 
 See `DISSERTATION_OUTLINE.md` for how these results map onto a dissertation
 structure, and `README.md` for how to regenerate every figure referenced
