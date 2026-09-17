@@ -17,6 +17,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+# Cross-validates this project's linear-chirp (g=linear) baseline against a real
+# LoRaWAN PHY reference implementation (tests/test_reference_crossval.py,
+# examples/lorawan_experiments.py). Pinned to 0.2.0, not latest: 0.3.0's
+# lora_phy/multi.py uses a Python-3.12-only multi-line f-string expression that
+# fails to parse on 3.9-3.11 (this project's own supported range); 0.2.0 predates
+# that module and has no such issue. Entirely optional -- nothing in nlfsc_lora
+# itself depends on it, and the cross-validation tests skip cleanly if it's absent.
+refcheck = ["lora_phy==0.2.0"]
 
 [tool.setuptools.packages.find]
 include = ["nlfsc_lora*"]

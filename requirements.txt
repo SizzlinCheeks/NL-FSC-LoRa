@@ -2,3 +2,8 @@ numpy>=1.23
 scipy>=1.9
 matplotlib>=3.6
 pytest>=7.0
+
+# Optional: real LoRaWAN PHY reference cross-validation (tests/test_reference_crossval.py,
+# examples/lorawan_experiments.py). Pinned to 0.2.0 -- see pyproject.toml's "refcheck"
+# extra for why. Comment out if you don't need the cross-validation/LoRaWAN-framing tests.
+lora_phy==0.2.0
