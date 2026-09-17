@@ -652,9 +652,12 @@ chirps identically.
 
 ```
 pip install -e .[refcheck]
-pytest tests/test_reference_crossval.py tests/test_lorawan_framing.py tests/test_duty_cycle.py
+pytest tests/test_reference_crossval.py tests/test_lorawan_framing.py tests/test_duty_cycle.py \
+       tests/test_interference.py tests/test_adr.py
 python examples/lorawan_experiments.py     # writes 24_lorawan_packet_pass_rate.png
 python examples/duty_cycle_experiments.py  # writes 25_duty_cycle_reacquisition.png
+python examples/interference_experiments.py  # writes 26_lorawan_interference.png
+python examples/adr_experiments.py           # writes 27_adr_reacquisition.png
 ```
 
 - **`tests/test_reference_crossval.py`** -- this project's baseline (`m=0`)
@@ -688,6 +691,28 @@ python examples/duty_cycle_experiments.py  # writes 25_duty_cycle_reacquisition.
   of, at no extra search cost. A real aliasing pitfall in
   `joint_cfo_symbol_search` at wide search spans (caught directly, not
   assumed away) is documented in the script's own module docstring.
+- **`26_lorawan_interference.png`** -- real overlapping LoRaWAN packets
+  (`lora_phy`'s own transmitter and full receiver, real preamble detection
+  and sync) checking two known LoRa PHY properties directly: the **capture
+  effect** (same-SF collision is close to a step function -- the desired
+  packet needs to be within ~1dB of the interferer to be recovered at all)
+  and **spreading-factor quasi-orthogonality** (a different-SF interferer
+  is far less disruptive -- capture holds down to roughly -10 to -14dB SIR,
+  an order of magnitude more tolerance than same-SF). A secondary sweep
+  found capture probability isn't a gradual function of collision overlap:
+  it stays near 0% for any overlap reaching the packet's last 5-10%, and
+  recovers only once the interferer misses that tail (the CRC-bearing
+  block) entirely -- a burst-error failure mode, not a gradual one.
+- **`27_adr_reacquisition.png`** -- does cross-packet reacquisition survive
+  a real ADR spreading-factor switch (consecutive uplinks from the same
+  device routinely use *different* SFs, not a fixed one)? `KalmanAFCLoop`'s
+  tracked rate is in Hz per burst, and burst duration doubles with every SF
+  step, so carrying a rate estimate across an SF change without accounting
+  for that is wrong by close to the ratio of the two symbol durations
+  (SF7-to-SF9: 4x error; SF7-to-SF12: 32x). `predicted_center_hz_per_s`
+  (Hz/s in, config-independent) fixes it, accurate to under 1% of true
+  drift across every transition tested, where the unconverted version fails
+  reacquisition completely at anything past a one-step SF change.
 
 ## Extending it
 

@@ -1601,6 +1601,96 @@ the actual point better anyway: it's exactly the precision a *correctly
 centered* search needs, no wider, which is the whole case for prediction
 over blind guessing in the first place.
 
+### Does a real receiver still hear the desired packet at all?
+
+Everything above still assumes one transmitter and thermal noise. Real
+LoRaWAN gateways share spectrum with every other device in range, and two
+uplinks can genuinely collide on the same channel at the same time. This
+was never tested — every earlier test here used a single transmitter.
+`examples/interference_experiments.py` builds real overlapping packets
+(`lora_phy`'s own `encode`/`modulate`, one "desired" and one "interferer")
+and checks whether `lora_phy`'s own full receiver pipeline — real preamble
+detection and sync, not this project's instrumented burst slicing — still
+recovers the desired one.
+
+![Real LoRaWAN multi-device collision: capture probability vs. SIR and spreading-factor separation, and vs. how much of the packet the interferer actually overlaps](pictures/26_lorawan_interference.png)
+
+*(Left panel.)* Two real, well-known LoRa PHY properties, now directly
+measured rather than cited. The **capture effect**: at the same spreading
+factor, capture is close to a step function — the desired packet needs to
+be within about a decibel of matching or beating the interferer, and below
+that threshold it is essentially never recovered. **Spreading-factor
+quasi-orthogonality**: an interferer even one SF away from the desired
+packet is far less disruptive — the desired packet is still captured down
+to roughly $-10$ to $-14$dB SIR (an order of magnitude *weaker* than the
+interferer) once the two transmissions use different spreading factors,
+because their chirp rates don't correlate well against each other's own
+dechirp reference. Both numbers land in the same range the LoRa literature
+already reports; this is a direct measurement of it, not a repetition of
+the claim.
+
+*(Right panel.)* A finding that took a wrong first guess to get right,
+worth being honest about: the naive expectation is that capture probability
+degrades gradually the more of the packet a strong interferer overlaps. It
+doesn't. At a fixed, clearly-dominant interferer strength ($-3$dB SIR),
+capture stays at essentially 0% for *any* starting offset that still
+reaches the last 5–10% of the packet, and jumps to recovery only once the
+interferer starts late enough to miss that tail entirely. Hamming FEC and
+interleaving handle *scattered* errors; they don't have a chance against a
+*contiguous* block of corrupted symbols landing on the CRC-bearing block
+specifically — a burst error, not a scattered one. The first version of
+this experiment swept the overlap fraction evenly across $[0,1]$ and found
+an apparently noisy, uninformative curve; probing directly (not adding more
+trials and hoping the noise averaged out) found the real transition
+concentrated in that narrow, near-full-overlap band, not spread evenly
+across the packet at all.
+
+### Does reacquisition survive a real ADR spreading-factor switch?
+
+Real LoRaWAN devices don't transmit at a fixed spreading factor. Adaptive
+Data Rate steps a device to a higher (more robust, slower) SF as its link
+degrades, and back down as it improves — always the fastest datarate the
+current link margin supports. That means the cross-packet reacquisition
+idea above has to survive something harder than a same-SF gap: consecutive
+packets from the *same* device routinely land at *different* spreading
+factors. `examples/adr_experiments.py` checks directly whether it does.
+
+The problem this creates isn't hypothetical. `KalmanAFCLoop`'s own tracked
+rate is in Hz *per burst*, and a burst's duration depends on spreading
+factor — doubling with every SF step up. Carry a rate estimate from one
+packet across an SF change the natural way (look up "the current config" at
+each step, which is exactly what stepping the predict-only loop by the
+*new* packet's own burst count does) without separately accounting for
+which SF the rate was *tracked* under, and the result is wrong by close to
+the ratio of the two symbol durations — confirmed directly, not assumed: a
+real, plausible SF7-to-SF9 ADR move (two steps, a $4\times$ symbol-duration
+ratio) turns a 3.2kHz drift prediction into 0.8kHz, off by nearly the full
+$4\times$.
+
+![Cross-SF rate-extrapolation error (buggy vs. Hz/s-safe) and the resulting reacquisition success rate after a real ADR spreading-factor switch](pictures/27_adr_reacquisition.png)
+
+*(Left panel.)* The fix is the same kind as the earlier Hz/burst-vs-Hz/s
+bug: don't trust two separately-computed, unit-bearing numbers (a rate and
+a burst count) to agree on which config's symbol duration they're expressed
+in. `predicted_center_hz_per_s` takes a physical rate (Hz/s, config-
+independent) and a real elapsed gap (seconds), converting to whichever
+config is actually in play internally rather than leaving that to the call
+site. Accurate to well under 1% of the true drift across every spreading-
+factor transition tested, from no change at all up to a dramatic SF7-to-
+SF12 jump ($32\times$ the symbol-duration ratio) — where the unconverted
+version is off by essentially the entire signal.
+
+*(Right panel.)* The practical cost of the bug, not just the size of the
+error: at SF7-to-SF9 and SF7-to-SF10, the unconverted prediction is bad
+enough that reacquisition at the new spreading factor fails completely, no
+better than a blind, zero-centered search — while the Hz/s-safe version
+recovers a real, substantial fraction of attempts at every transition
+tested. One honest nuance: at the smallest step (SF7-to-SF8), the bug's own
+error happens to still fit inside that configuration's own alias-safe
+search span, so the unconverted version does almost as well as the fixed
+one there — the failure is real and severe, but it shows up once the SF gap
+is large enough, not on every ADR move regardless of size.
+
 ---
 
 ## Where to go from here

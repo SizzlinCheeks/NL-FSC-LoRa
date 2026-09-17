@@ -655,6 +655,8 @@ Implementation: `examples/packet_experiments.py::test4_wideband_doppler_scale`;
 | Baseline cross-validated against a real LoRa PHY | §11.1 | -- | `test_reference_crossval.py::test_full_alphabet_noiseless_cross_decode_is_exact` |
 | Doppler tracking survives real Hamming/CRC framing | §11.2 | `examples/lorawan_experiments.py` | `test_lorawan_framing.py::test_static_correction_baseline_does_worse_than_tracking_under_uav_reversal` |
 | Between-packet drift vs. duty cycle; rate-predicted reacquisition | §11.3 | `examples/duty_cycle_experiments.py` | `test_duty_cycle.py::test_rate_predicted_acquisition_recovers_jump_a_blind_search_misses` |
+| Multi-device collision: capture effect + SF orthogonality | §11.4 | `examples/interference_experiments.py` | `test_interference.py::test_different_sf_interferer_is_far_less_disruptive_than_same_sf` |
+| ADR spreading-factor switch; Hz/s-safe reacquisition | §11.5 | `examples/adr_experiments.py`, `duty_cycle_experiments.py::predicted_center_hz_per_s` | `test_adr.py::test_predicted_center_hz_per_s_is_accurate_across_every_sf_transition` |
 
 ## 8. Comparison with standard LoRa, and when this applies
 
@@ -1025,6 +1027,50 @@ alias-safe span, which is also the more honest test -- exactly the
 precision a correctly-centered search needs, no wider.
 (`examples/output/25_duty_cycle_reacquisition.png`,
 `tests/test_duty_cycle.py`.)
+
+**11.4 Multi-device collisions.** `examples/interference_experiments.py`
+builds real, overlapping LoRaWAN packets (`lora_phy`'s own `encode`/
+`modulate`) and checks whether `lora_phy`'s own receiver -- real preamble
+detection and sync -- still recovers the desired one, measuring two known
+LoRa PHY properties directly instead of citing them. The **capture
+effect**: at matched spreading factor, capture is close to a step function
+in SIR, requiring the desired packet to be within about 1dB of the
+interferer to be recovered at all. **SF quasi-orthogonality**: an
+interferer one SF away is far less disruptive -- capture holds down to
+roughly $-10$ to $-14$dB SIR once the two transmissions use different
+spreading factors, an order of magnitude more tolerance than same-SF
+collisions. A secondary sweep over collision *overlap fraction* (fixed
+$-3$dB SIR, same SF) found capture is not a gradual function of how much of
+the packet is overlapped: it stays at $\approx 0\%$ for any overlap that
+still reaches the last 5-10% of the packet, and recovers only once the
+interferer starts late enough to miss that tail (the CRC-bearing block)
+entirely -- a burst-error failure mode Hamming FEC and interleaving aren't
+built to correct, not a gradual degradation. (`examples/output/
+26_lorawan_interference.png`, `tests/test_interference.py`.)
+
+**11.5 ADR spreading-factor switches.** Real LoRaWAN devices don't hold a
+fixed SF: Adaptive Data Rate steps to a higher (more robust) SF as link
+quality degrades, so consecutive uplinks from the same device routinely use
+*different* spreading factors -- a harder case for §11.3's cross-packet
+reacquisition than a same-SF gap. `examples/adr_experiments.py` implements
+the standard ADR rule (pick the lowest SF whose required-SNR margin the
+measured link still supports, LoRaWAN's own per-SF demodulation floor
+table) and finds the real problem directly: `KalmanAFCLoop`'s tracked rate
+is in Hz *per burst*, and burst duration doubles with each SF step, so
+carrying a rate estimate across an SF change without accounting for that
+(exactly what naturally happens if a receiver just looks up "the current
+config" at each step) gives a prediction wrong by close to the ratio of the
+two symbol durations -- SF7-to-SF9 (a real, plausible two-step move) is a
+$4\times$ error; SF7-to-SF12 is $32\times$. `predicted_center_hz_per_s`
+fixes this the same way §11.3's own step-size fix did: take physical units
+(Hz/s, seconds) and convert internally, rather than trust two separately-
+computed, unit-bearing call-site arguments to agree. Accurate to under 1%
+of true drift across every transition tested; the unconverted version, by
+contrast, fails reacquisition completely at SF7-to-SF9 and SF7-to-SF10 (no
+better than a blind, zero-centered search), succeeding only at the smallest
+step (SF7-to-SF8), where its own error happens to still fit inside that
+configuration's alias-safe span. (`examples/output/27_adr_reacquisition.png`,
+`tests/test_adr.py`.)
 
 ---
 

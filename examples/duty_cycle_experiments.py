@@ -117,6 +117,29 @@ def predicted_center(cfo0, rate0, n_equiv_bursts, process_noise_cfo=1.0, process
     return loop.cfo_tracked
 
 
+def predicted_center_hz_per_s(cfo0, rate_hz_per_s, gap_s, cfg, **kwargs):
+    """The safe entry point predicted_center's own Hz/burst contract invites
+    getting wrong across a spreading-factor (ADR) change: predicted_center
+    takes rate0 and n_equiv_bursts as two separately-computed, unit-bearing
+    arguments with no enforcement that they agree on *which* config's
+    symbol_duration they're expressed in. Get that wrong -- e.g. hand it a
+    rate tracked under the previous packet's SF but an equivalent-burst
+    count computed from the *new* packet's SF, exactly what a receiver
+    naturally computes if it just looks up "the current config" at each step
+    -- and the returned prediction is wrong by the ratio of the two symbol
+    durations (found directly while building examples/adr_experiments.py:
+    SF7-to-SF9 at 125kHz is a 4x error, not a rounding difference).
+
+    This wrapper removes the ambiguity structurally: callers pass a rate in
+    physical Hz/s (config-independent) and a gap in real seconds, and the
+    conversion to and from whichever cfg is actually in play happens here,
+    once, so it can't be gotten wrong at the call site the way the two
+    separate unit-bearing arguments invite."""
+    rate_per_burst = rate_hz_per_s * cfg.symbol_duration
+    n_equiv_bursts = gap_s / cfg.symbol_duration
+    return predicted_center(cfo0, rate_per_burst, n_equiv_bursts, **kwargs)
+
+
 def acquire(cfg, true_cfo, center, span, step, n_bursts, snr_db, seed):
     """N_PREAMBLE-burst acquisition (sync.py::joint_cfo_symbol_search,
     afc.py::_combine_acquisition -- the exact machinery packet_experiments.py's
