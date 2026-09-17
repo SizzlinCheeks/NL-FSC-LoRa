@@ -134,16 +134,44 @@ def acquire(cfg, true_cfo, center, span, step, n_bursts, snr_db, seed):
 
 
 def experiment_predicted_vs_blind_acquisition():
-    """The direct test: sweep the duty-cycle gap duration itself (0 to ~150s,
-    the range the real-numbers table above actually spans, SF7 through SF12),
-    holding the true Doppler rate fixed at this project's own worst-case
-    grounded LEO number (640 Hz/s) -- so the true new CFO (rate x gap) and the
-    rate-based prediction grow *together*, exactly as they would in reality,
-    rather than being swept as independent, artificially decoupled
-    quantities. Compares a blind search (centered at 0, this project's
-    existing default, correct only for the zero-gap limit) against one
-    re-centered on the rate-based extrapolation -- same span width
-    (+/-25kHz), same search cost, different center.
+    """The direct test: sweep the duty-cycle gap duration itself, holding the
+    true Doppler rate fixed at a realistic LEO number -- so the true new CFO
+    (rate x gap) and the rate-based prediction grow *together*, exactly as
+    they would in reality, rather than being swept as independent,
+    artificially decoupled quantities. Compares a blind search (centered at
+    0, this project's existing default, correct only for the zero-gap limit)
+    against one re-centered on the rate-based extrapolation -- same span
+    width, same search cost, different center.
+
+    Two real bugs were caught building this, worth being honest about since
+    both would have silently produced a misleading figure:
+
+    1. step=50Hz, not packet_experiments.py's own 250Hz: this project's own
+       established rule (that file's push_acquisition_magnitude_limit
+       finding, tests/test_afc.py::test_acquisition_step_must_stay_under_half_bin_or_it_silently_fails)
+       is that the acquisition step must stay under half the half-bin
+       tolerance, or no candidate can land close enough to succeed
+       regardless of span. 250Hz was copied from a different (SF7/500kHz,
+       half_bin=1953Hz) configuration without rechecking it against this
+       one's much tighter half_bin=122Hz.
+
+    2. span=1500Hz, not a wide +/-25kHz span: joint_cfo_symbol_search jointly
+       searches (symbol, CFO), and a CFO error near a multiple of this
+       config's own bin spacing (bandwidth/M = 244Hz here) can alias with a
+       *different* symbol hypothesis almost as strongly as the true
+       (symbol, CFO) pair does -- confirmed directly, not assumed: a wide
+       +/-25kHz search (about 100 bin-widths) reproducibly locked onto a
+       wrong symbol 2 bins away from the truth, *even at 40dB SNR*, a
+       systematic aliasing failure, not a noise problem. The number of such
+       aliases scales with span/bin_width, which is why
+       packet_experiments.py's own Test 2 (SF7/500kHz, bin width 3906Hz,
+       ~6 aliases in the same nominal 25kHz) never ran into this: a fixed
+       span in Hz is not actually a shape/SF-independent design choice, and
+       this project's own established 25kHz figure happens to be safe only
+       for the configuration it was tuned on. A narrow, alias-safe span
+       (about 6 bin-widths each side here) removes the problem -- and turns
+       out to make the real point better anyway: it's exactly the accuracy a
+       *correctly re-centered* search actually needs, no wider.
 
     The prediction is deliberately not fed the exact true rate: a real
     receiver's last tracked rate before hand-off is itself an estimate, with
@@ -152,31 +180,27 @@ def experiment_predicted_vs_blind_acquisition():
     at a small fraction of the true rate, not exactly zero) -- modeled here
     as a +/-5% relative jitter per trial, a conservative placeholder for that
     residual error rather than a number re-derived from a full within-packet
-    tracking simulation, which is out of this experiment's scope.
+    tracking simulation, which is out of this experiment's scope. The true
+    rate itself (637.3 Hz/s, not a round 640) is deliberately not a clean
+    multiple of the search step either -- a round true_rate x round gap
+    landed the true CFO suspiciously exactly on the blind search's own
+    0-centered grid in early testing, artificially inflating blind's
+    measured success rate.
 
     A successful acquisition is one landing within half a bin of the true
     CFO (the threshold that actually matters: close enough for
     fft_correlation_demod to decode correctly from there)."""
     cfg = make_cfg(9, 125e3)  # SF9/125kHz: half_bin=122Hz, a config from the table above
     half_bin = cfg.bandwidth / cfg.M / 2
-    # step=50Hz, not packet_experiments.py's own 250Hz: this project's own established
-    # rule (examples/packet_experiments.py's push_acquisition_magnitude_limit finding,
-    # tests/test_afc.py::test_acquisition_step_must_stay_under_half_bin_or_it_silently_fails)
-    # is that the acquisition step must stay under half the half-bin tolerance, or no
-    # candidate can land close enough to succeed regardless of span. 250Hz was copied from
-    # a different (SF7/500kHz, half_bin=1953Hz) configuration without rechecking it against
-    # this one's much tighter half_bin=122Hz -- caught directly, not assumed safe, by this
-    # experiment initially showing a suspiciously low blind-search success rate even for
-    # jumps comfortably inside the search span.
-    span, step, n_bursts = 25000.0, 50.0, 8
-    true_rate = 640.0  # Hz/s, worst-case LEO rate from the table
+    span, step, n_bursts = 1500.0, 50.0, 8
+    true_rate = 637.3  # Hz/s, close to the table's worst-case 640, deliberately not round
     # KalmanAFCLoop's rate_tracked is Hz *per burst* (its own model: cfo[i+1]=cfo[i]+rate[i],
     # one burst per step), not Hz/s -- convert the real-world rate before use.
     true_rate_per_burst = true_rate * cfg.symbol_duration
 
-    gaps_s = np.arange(0.0, 150.0, 15.0)
+    gaps_s = np.arange(0.0, 65.0, 5.0)
     snr_db = -10.0
-    n_trials = 20
+    n_trials = 40
     rng_jitter = np.random.default_rng(42)
 
     success_blind = np.empty(len(gaps_s))
@@ -234,14 +258,14 @@ def plot_duty_cycle_findings(rows, gaps_s, true_cfos, success_blind, success_pre
                     label=f"gap where true drift = span ({span_edge_gap:.0f}s)")
     ax_acq.set(xlabel="duty-cycle gap since last packet (s)", ylabel="acquisition success rate",
                ylim=(-0.05, 1.05),
-               title=f"Same-width (+/-{span/1e3:.0f}kHz) acquisition, blind vs. rate-predicted center\n"
-                     f"(SF9/125kHz, true rate={true_rate:.0f}Hz/s worst-case LEO, SNR=-10dB)")
+               title=f"Same-width (+/-{span:.0f}Hz, alias-safe) acquisition, blind vs. rate-predicted center\n"
+                     f"(SF9/125kHz, true rate={true_rate:.1f}Hz/s worst-case LEO, SNR=-10dB)")
     ax_acq.legend(fontsize=8)
     ax2 = ax_acq.twiny()
     ax2.set_xlim(ax_acq.get_xlim())
-    tick_gaps = [0, 40, 80, 120]
+    tick_gaps = [g for g in [0, 15, 30, 45, 60] if g <= gaps_s.max()]
     ax2.set_xticks(tick_gaps)
-    ax2.set_xticklabels([f"{true_rate*g/1e3:.0f}kHz" for g in tick_gaps], fontsize=7)
+    ax2.set_xticklabels([f"{true_rate*g/1e3:.1f}kHz" for g in tick_gaps], fontsize=7)
     ax2.set_xlabel("true CFO drift at that gap", fontsize=8)
 
     fig.tight_layout()
