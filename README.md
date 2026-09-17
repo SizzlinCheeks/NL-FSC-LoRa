@@ -656,7 +656,7 @@ pytest tests/test_reference_crossval.py tests/test_lorawan_framing.py tests/test
        tests/test_interference.py tests/test_adr.py
 python examples/lorawan_experiments.py     # writes 24_lorawan_packet_pass_rate.png
 python examples/duty_cycle_experiments.py  # writes 25_duty_cycle_reacquisition.png
-python examples/interference_experiments.py  # writes 26_lorawan_interference.png
+python examples/interference_experiments.py  # writes 26_lorawan_interference.png, 28_lorawan_sf_spectrogram.png
 python examples/adr_experiments.py           # writes 27_adr_reacquisition.png
 ```
 
@@ -703,6 +703,15 @@ python examples/adr_experiments.py           # writes 27_adr_reacquisition.png
   it stays near 0% for any overlap reaching the packet's last 5-10%, and
   recovers only once the interferer misses that tail (the CRC-bearing
   block) entirely -- a burst-error failure mode, not a gradual one.
+- **`28_lorawan_sf_spectrogram.png`** -- the mechanism behind SF quasi-
+  orthogonality, made visible: a spectrogram of four real spreading factors
+  (SF7-SF10) sharing one channel, each tiled to fill the longest one's own
+  symbol duration. Every trace sweeps the same band bottom-to-top, but a
+  lower SF does it faster, so two different SFs share the same
+  instantaneous frequency only briefly before diverging -- same-SF traces
+  would instead be the *same* diagonal, permanently coincident, which is
+  exactly why same-SF collisions behave like a step function above while
+  every other SF pairing is far more forgiving.
 - **`27_adr_reacquisition.png`** -- does cross-packet reacquisition survive
   a real ADR spreading-factor switch (consecutive uplinks from the same
   device routinely use *different* SFs, not a fixed one)? `KalmanAFCLoop`'s

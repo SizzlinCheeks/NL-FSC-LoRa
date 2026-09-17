@@ -26,11 +26,14 @@ Run with: python examples/interference_experiments.py
 import os
 import time
 
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal import spectrogram
 
 try:
     from lora_phy import LoRaReceiver, LoRaTransmitter
+    from lora_phy import common as lp_common
     HAVE_LORA_PHY = True
 except ImportError:
     HAVE_LORA_PHY = False
@@ -200,6 +203,57 @@ def plot_interference_findings(sir_range, sf_results, offsets, overlap_capture):
     plt.close(fig)
 
 
+def plot_sf_spectrogram_overlay(sfs=(7, 8, 9, 10)):
+    """The visual behind the left panel of 26_lorawan_interference.png:
+    why does spreading-factor separation matter at all? Overlay one
+    real up-chirp per SF (lora_phy's own construction, all sharing the same
+    bandwidth and so the same frequency axis), each tiled to repeat enough
+    times to fill the longest (highest-SF) symbol's own duration -- since a
+    lower-SF transmitter really does send several symbols in the time a
+    higher-SF one sends one. Same SF would trace the *same* diagonal every
+    time, permanently coincident in frequency at every instant (hence the
+    near step-function capture behavior in the SIR sweep); different SFs
+    sweep the same band at different rates, crossing each other only
+    briefly rather than staying aligned -- the direct visual reason a
+    different-SF interferer is so much less disruptive than a same-SF one."""
+    chirps = {sf: lp_common.chirp(True, sf, BANDWIDTH, SAMPLE_RATE, start_freq_offset=0) for sf in sfs}
+    n_total = len(chirps[max(sfs)])  # longest (highest-SF) symbol duration
+
+    combined = np.zeros(n_total, dtype=complex)
+    for c in chirps.values():
+        tiled = np.tile(c, n_total // len(c))
+        combined[:len(tiled)] += tiled
+
+    f, t, Sxx = spectrogram(combined, fs=SAMPLE_RATE, nperseg=256, noverlap=248,
+                             return_onesided=False, mode="magnitude")
+    f = np.fft.fftshift(f)
+    Sxx = np.fft.fftshift(Sxx, axes=0)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    im = ax.pcolormesh(t * 1e3, f / 1e3, 20 * np.log10(Sxx + 1e-6), shading="gouraud",
+                        cmap="magma", vmin=-50, vmax=-15)
+    ax.set(xlabel="time (ms)", ylabel="frequency (kHz)", ylim=(-BANDWIDTH / 2 / 1e3, BANDWIDTH / 2 / 1e3),
+           title=f"{len(sfs)} real LoRa spreading factors sharing one channel (SF{min(sfs)}–SF{max(sfs)}, "
+                 f"{BANDWIDTH/1e3:.0f}kHz)\nsame band, different chirp rates: briefly aligned, never coincident")
+    cbar = fig.colorbar(im)
+    cbar.set_label("magnitude (dB)")
+
+    # Label each SF where its own first sweep peaks (just before it wraps into its next
+    # repeat) -- these times are, by construction, as different as the SFs' own durations
+    # (dur_ms, 2*dur_ms, 4*dur_ms, ...), so the labels land well separated from each other
+    # even though they share the same frequency (the top of the band).
+    for sf in sfs:
+        dur_ms = len(chirps[sf]) / SAMPLE_RATE * 1e3
+        label_t = dur_ms * 0.95
+        ax.annotate(f"SF{sf}", xy=(label_t, BANDWIDTH / 2 / 1e3), xytext=(label_t - 0.05, 53),
+                    color="white", fontsize=10, fontweight="bold", ha="center",
+                    path_effects=[pe.withStroke(linewidth=2.5, foreground="black")])
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "28_lorawan_sf_spectrogram.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     if not HAVE_LORA_PHY:
         print("lora_phy is not installed (pip install .[refcheck]) -- skipping interference experiments.")
@@ -208,6 +262,7 @@ def main():
     sir_range, sf_results = experiment_capture_vs_sf_separation()
     offsets, overlap_capture = experiment_capture_vs_overlap()
     plot_interference_findings(sir_range, sf_results, offsets, overlap_capture)
+    plot_sf_spectrogram_overlay()
     print(f"Wrote figures to {OUT_DIR}")
 
 

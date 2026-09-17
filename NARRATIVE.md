@@ -1627,6 +1627,21 @@ interferer) once the two transmissions use different spreading factors,
 because their chirp rates don't correlate well against each other's own
 dechirp reference. Both numbers land in the same range the LoRa literature
 already reports; this is a direct measurement of it, not a repetition of
+
+The mechanism behind that second property is visible directly, not just
+inferable from the capture curve: four real spreading factors (SF7–SF10),
+same channel, each tiled to fill the longest one's own symbol duration.
+
+![Spectrogram of four real LoRa spreading factors sharing one channel, showing each one's own distinct chirp slope crossing the others rather than staying aligned](pictures/28_lorawan_sf_spectrogram.png)
+
+Every trace starts at the bottom of the band and sweeps to the top — but a
+lower SF does it faster (steeper slope, repeating several times in the
+window a higher SF takes for one sweep), so two different SFs share the
+same instantaneous frequency for only an instant before diverging again.
+Same-SF traces, by contrast, would be the *same* diagonal line, permanently
+coincident — exactly why the capture curve above is a near step function
+for same-SF collisions and a much more forgiving slope for every other
+spreading-factor pairing.
 the claim.
 
 *(Right panel.)* A finding that took a wrong first guess to get right,

@@ -1046,7 +1046,13 @@ still reaches the last 5-10% of the packet, and recovers only once the
 interferer starts late enough to miss that tail (the CRC-bearing block)
 entirely -- a burst-error failure mode Hamming FEC and interleaving aren't
 built to correct, not a gradual degradation. (`examples/output/
-26_lorawan_interference.png`, `tests/test_interference.py`.)
+26_lorawan_interference.png`, `tests/test_interference.py`.) The mechanism
+behind SF quasi-orthogonality itself is visible directly in
+`28_lorawan_sf_spectrogram.png`: four real spreading factors sharing one
+channel, each tiled to its own symbol duration -- every SF sweeps the same
+band, but at a different rate, so any two SFs share the same instantaneous
+frequency only briefly, while a same-SF pair would be the identical
+diagonal, permanently coincident.
 
 **11.5 ADR spreading-factor switches.** Real LoRaWAN devices don't hold a
 fixed SF: Adaptive Data Rate steps to a higher (more robust) SF as link
