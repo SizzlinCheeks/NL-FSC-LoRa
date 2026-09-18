@@ -1708,6 +1708,120 @@ is large enough, not on every ADR move regardless of size.
 
 ---
 
+## Could It Actually Work? Real LoRaWAN Framing on This Project's Own Nonlinear PHY
+
+Every test in this section so far stayed at `g=linear`, and said why up
+front: `lora_phy` is a stand-in for real commercial hardware, and real
+hardware only ever generates a straight-line chirp. That's a fact about
+silicon, not a boundary on what this project's own receiver can do — and
+it's worth being direct about what it does and doesn't rule out. It rules
+out ever cross-*validating* a hyperbolic waveform against real hardware,
+because no real hardware exists that could transmit or receive one. It does
+not rule out asking the actual question this project has been building
+toward the whole time: if a radio *could* run this project's own curved
+trajectory, would a real LoRaWAN link — not just the isolated chirp math,
+but the actual protocol riding on top of it — work end to end?
+
+The answer falls out of how `lora_phy` itself is built, not from anything
+new invented here. `LoRaTransmitter.encode()` and `LoRaReceiver.decode()`
+— the Hamming FEC, diagonal interleaving, whitening, Gray coding, and
+CRC16 — operate entirely on symbol *values* (`0` to `M-1` chirp-shift
+integers). They never touch a waveform sample. The only two calls in the
+entire library that generate or demodulate an actual physical chirp are
+`modulate()`/`common.chirp` (linear-only) and the receiver's internal
+dechirp step — and this project has had its own general-purpose
+replacements for exactly those two calls from the very first chapter:
+`chirp.py::symbol_waveform` (any `g`) and
+`receiver.py::fft_correlation_demod` (already proven trajectory-agnostic
+back in Chapter 4's `14_ser_vs_snr_all_shapes.png`). Swap those two in for
+`lora_phy`'s linear-only pair, and the entire protocol layer comes along
+unmodified — because it was never actually coupled to the linear-chirp
+assumption. It only looks coupled to it because every existing
+implementation of it happens to sit on top of linear-chirp hardware.
+`examples/nonlinear_lorawan_experiments.py` is that swap, made concrete.
+
+### The same narrowband story, now on the real trajectory
+
+The first check is the direct continuation of the "Testing Against the
+Real Thing" work above: the same constant-20kHz and UAV-reversal Doppler
+profiles, the same real Hamming/CRC framing, this project's own AFC
+tracking — but now the physical waveform is genuinely hyperbolic, not a
+linear stand-in.
+
+![Real LoRaWAN-framed packet CRC pass rate: linear PHY (what real hardware runs) vs. this project's own hyperbolic PHY, same Doppler profiles, same tracking](pictures/30_nonlinear_lorawan_pass_rate.png)
+
+Both curves hold a clean waterfall down to well below 0 dB SNR, for both
+Doppler profiles — the basic claim, confirmed: a real, standards-shaped
+packet works just as well physically riding on a curved trajectory as on a
+straight one. What's more interesting is that the two curves aren't
+identical — hyperbolic sits consistently *above* linear at low SNR, by
+roughly 1–2 dB at the transition knee, in both panels. Worth chasing down
+rather than shrugging off, since Chapter 4 already established that plain
+decode noise-tolerance doesn't depend on trajectory shape. Checked
+directly: baseline symbol error rate (no CFO, no acquisition, just
+`fft_correlation_demod` against noise) is statistically identical between
+the two shapes at this configuration — so the gap isn't decode margin.
+
+It's acquisition. Measured directly (`sync.py::joint_cfo_symbol_search`,
+the same 8-burst-combined preamble search both trackers use, 20 kHz true
+CFO, −14 dB SNR, 40 trials): **linear fails to acquire roughly half the
+time; hyperbolic essentially never does.** That is not a small effect, and
+it has a real explanation, not a hand-wave: `joint_cfo_symbol_search`
+jointly resolves *(symbol, CFO)* from one noisy burst, and how easy that
+joint resolution is depends on the waveform's own ambiguity function — the
+same delay/Doppler coupling concept the sonar literature Chapter 9 already
+cites is built around. A linear chirp's ambiguity function is famously
+*sheared*: a CFO error and a cyclic-shift (symbol) error partially
+substitute for each other, so a noisy search can mistake one for the other
+with real, non-negligible probability. That coupling is exactly why real
+sonar and radar systems reach for HFM in the first place (Kroszczyński
+1969 onward) — HFM's own ambiguity function doesn't have that shear.
+Chapter 9 already made this case from the matched-filter-detection side;
+this is the same underlying property showing up, unprompted, inside this
+project's own joint acquisition search, measured directly rather than
+argued from the literature.
+
+### The wideband case: something no real radio can attempt at all
+
+The narrowband case is "works equally well, with a bonus." The wideband
+case is categorical. Chapter 10 built and validated the paired-sweep DHFM
+correction at the single-symbol and simplified-packet level; here it runs
+inside a genuinely real, Hamming FEC + interleaved + whitened + Gray-coded
++ CRC16-checked LoRaWAN packet, at $\alpha=1.05$ — comfortably past this
+configuration's own half-bin failure threshold ($\approx 1.004$).
+
+![Real LoRaWAN-framed packet CRC pass rate under a wideband Doppler time-scale, paired-sweep corrected vs. uncorrected](pictures/31_nonlinear_lorawan_wideband_scale.png)
+
+Corrected, this holds a clean waterfall down to roughly $-14$ to $-16$ dB
+SNR — a real packet, Hamming FEC and CRC16 intact, surviving a channel
+condition this project's own earlier work already showed defeats *every*
+trajectory shape when uncorrected (`08_lora_ser_vs_doppler_scale.png`).
+Uncorrected, it is exactly that: flat at 0% across the *entire* tested SNR
+range, $+5$ down to $-20$ dB — not a degraded waterfall, a wall.
+
+The reason this isn't just "harder for real hardware" but categorically
+unavailable to it: the paired-sweep closed form is derived directly from
+HFM's own exact self-similarity theorem (§5.2), which a linear chirp does
+not have. There is no equivalent correction to even attempt on a linear
+PHY for this channel model — not a worse version of the same fix, an
+absent one. A real LoRaWAN radio, restricted to the linear chirp its
+silicon hard-codes, has no path to surviving this channel condition at
+all, corrected or not. This project's own receiver, running its own
+trajectory, does — with the actual protocol machinery, not a simplified
+stand-in for it, checking every symbol along the way.
+
+That is the honest shape of the project's own central claim, stated as
+concretely as the evidence supports: not "nonlinear trajectories are
+better LoRa," but "a real LoRaWAN link, carried on a trajectory no real
+radio can generate, gains a capability no real radio can have" — provided
+something can eventually transmit and receive that trajectory, which today
+means this project's own simulation, not commercial silicon.
+
+Implementation: `examples/nonlinear_lorawan_experiments.py`. Tests:
+`tests/test_nonlinear_lorawan.py`.
+
+---
+
 ## Where to go from here
 
 - `PAPER.md` — the same results with every proof given in full, organized

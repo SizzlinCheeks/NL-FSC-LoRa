@@ -650,24 +650,44 @@ rather than duplicated here:
   now confirmed to survive real channel coding intact. See "Cross-validation
   against a real LoRaWAN PHY" below / NARRATIVE.md's "Testing Against the
   Real Thing: LoRaWAN Cross-Validation" / PAPER.md §11.
+- **Could it actually work? Real LoRaWAN framing on this project's own
+  nonlinear PHY.** The other side of the previous bullet: `lora_phy`'s
+  protocol layer (`encode()`/`decode()`) never touches a waveform sample --
+  only its `modulate()`/dechirp calls do, and those are the exact two calls
+  this project has had general-purpose (any trajectory) replacements for
+  since Chapter 1. Swap them in and real Hamming FEC, interleaving,
+  whitening, and CRC16 ride on this project's own hyperbolic PHY
+  unmodified. Under narrowband Doppler it performs at least as well as
+  linear (and measurably better at acquiring a large CFO, for a real,
+  ambiguity-function reason tied to Chapter 9's own sonar/radar
+  literature). Under a wideband Doppler *scale* -- a channel condition
+  that defeats every trajectory shape when uncorrected -- a real,
+  CRC-checked packet survives when paired-sweep-corrected and fails
+  completely when it isn't, with no correction mechanism even available on
+  a linear PHY. See "Cross-validation against a real LoRaWAN PHY" below /
+  NARRATIVE.md's "Could It Actually Work?" / PAPER.md §12.
 
 ## Cross-validation against a real LoRaWAN PHY
 
 Optional (`pip install -e .[refcheck]`, pinned to `lora_phy==0.2.0` -- see
-`pyproject.toml` for why not latest). This project's own contribution
-(nonlinear trajectories) has no real reference to check against -- no real
-LoRa chipset generates a hyperbolic chirp -- so this only tests `g=linear`
-and the narrowband Doppler tracking (Chapters 6-7), which applies to linear
-chirps identically.
+`pyproject.toml` for why not latest). Most of this section tests only
+`g=linear`: `lora_phy` stands in for real commercial hardware, and no real
+LoRa chipset generates a hyperbolic chirp, so cross-*validating* against it
+only makes sense for the one shape real hardware actually runs. The last
+two figures below ask a different question instead -- not "does our math
+match real hardware," but "would a real LoRaWAN *link* work if something
+could run this project's own curved trajectory" -- and answer it by
+carrying real protocol framing over this project's own PHY.
 
 ```
 pip install -e .[refcheck]
 pytest tests/test_reference_crossval.py tests/test_lorawan_framing.py tests/test_duty_cycle.py \
-       tests/test_interference.py tests/test_adr.py
+       tests/test_interference.py tests/test_adr.py tests/test_nonlinear_lorawan.py
 python examples/lorawan_experiments.py     # writes 24_lorawan_packet_pass_rate.png
 python examples/duty_cycle_experiments.py  # writes 25_duty_cycle_reacquisition.png
 python examples/interference_experiments.py  # writes 26_lorawan_interference.png, 28_lorawan_sf_spectrogram.png
 python examples/adr_experiments.py           # writes 27_adr_reacquisition.png
+python examples/nonlinear_lorawan_experiments.py  # writes 30/31_nonlinear_lorawan_*.png
 ```
 
 - **`tests/test_reference_crossval.py`** -- this project's baseline (`m=0`)
@@ -732,6 +752,29 @@ python examples/adr_experiments.py           # writes 27_adr_reacquisition.png
   (Hz/s in, config-independent) fixes it, accurate to under 1% of true
   drift across every transition tested, where the unconverted version fails
   reacquisition completely at anything past a one-step SF change.
+- **`30_nonlinear_lorawan_pass_rate.png`** -- real LoRaWAN framing
+  (`lora_phy`'s encode/decode: Hamming FEC, interleave, whiten, Gray,
+  CRC16), physically carried on this project's own linear vs. hyperbolic
+  PHY, same Doppler profiles as `24_lorawan_packet_pass_rate.png`. Both
+  hold a clean waterfall well below 0dB SNR -- but hyperbolic sits
+  consistently 1-2dB above linear at the transition knee. Not a decode-
+  margin effect (checked directly: identical baseline SER, no CFO) --
+  it's acquisition: at 20kHz CFO, -14dB SNR, linear's 8-burst-combined
+  `joint_cfo_symbol_search` fails roughly half the time; hyperbolic
+  essentially never does. A linear chirp's ambiguity function is sheared
+  (CFO and symbol-shift errors partially substitute for each other) --
+  the classical reason sonar/radar favors HFM in the first place; HFM's
+  own ambiguity function doesn't have that coupling.
+- **`31_nonlinear_lorawan_wideband_scale.png`** -- the strongest result:
+  a wideband Doppler time-scale (alpha=1.05) that defeats *every*
+  trajectory shape uncorrected, applied to a real Hamming FEC/CRC16-coded
+  packet on this project's own hyperbolic PHY, corrected with
+  `paired_sweep`'s DHFM technique. Corrected: a clean waterfall to roughly
+  -14 to -16dB SNR. Uncorrected: flat at 0% across the *entire* tested
+  range, +5 to -20dB. A linear PHY has no correction to even attempt here
+  -- the paired-sweep closed form depends on HFM's own exact self-
+  similarity theorem -- so this isn't a harder case for real hardware,
+  it's a capability real hardware structurally cannot have at all.
 
 ## Extending it
 

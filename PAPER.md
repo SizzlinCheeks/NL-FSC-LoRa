@@ -657,6 +657,8 @@ Implementation: `examples/packet_experiments.py::test4_wideband_doppler_scale`;
 | Between-packet drift vs. duty cycle; rate-predicted reacquisition | §11.3 | `examples/duty_cycle_experiments.py` | `test_duty_cycle.py::test_rate_predicted_acquisition_recovers_jump_a_blind_search_misses` |
 | Multi-device collision: capture effect + SF orthogonality | §11.4 | `examples/interference_experiments.py` | `test_interference.py::test_different_sf_interferer_is_far_less_disruptive_than_same_sf` |
 | ADR spreading-factor switch; Hz/s-safe reacquisition | §11.5 | `examples/adr_experiments.py`, `duty_cycle_experiments.py::predicted_center_hz_per_s` | `test_adr.py::test_predicted_center_hz_per_s_is_accurate_across_every_sf_transition` |
+| Real LoRaWAN framing on this project's own hyperbolic PHY | §12 | `examples/nonlinear_lorawan_experiments.py` | `test_nonlinear_lorawan.py::test_wideband_scale_packet_recovered_only_when_corrected` |
+| Linear FM ambiguity-function coupling degrades acquisition | §12.1 | `sync.py::joint_cfo_symbol_search` | `test_nonlinear_lorawan.py::test_acquisition_is_more_reliable_for_hyperbolic_than_linear_under_cfo` |
 
 ## 8. Comparison with standard LoRa, and when this applies
 
@@ -1077,6 +1079,68 @@ better than a blind, zero-centered search), succeeding only at the smallest
 step (SF7-to-SF8), where its own error happens to still fit inside that
 configuration's alias-safe span. (`examples/output/27_adr_reacquisition.png`,
 `tests/test_adr.py`.)
+
+---
+
+## 12. Could it actually work? Real LoRaWAN framing on this project's own nonlinear PHY
+
+§11 stayed at $g=\text{linear}$ throughout because `lora_phy` stands in for
+real commercial hardware, and real hardware only generates a straight-line
+chirp -- a fact about silicon, not a bound on this project's own receiver.
+`LoRaTransmitter.encode()`/`LoRaReceiver.decode()` (Hamming FEC,
+interleaving, whitening, Gray coding, CRC16) operate entirely on symbol
+*values*; they never touch a waveform sample. The only two calls that
+generate or demodulate an actual chirp are `modulate()`/`common.chirp`
+(linear-only) and the receiver's dechirp step -- and this project has had
+general replacements for exactly those two since Chapter 1:
+`chirp.py::symbol_waveform` (any $g$) and `receiver.py::fft_correlation_demod`
+(trajectory-agnostic since §4's `14_ser_vs_snr_all_shapes.png`). Swapping
+those two in for `lora_phy`'s linear-only pair carries the entire protocol
+layer over unmodified, because it was never coupled to the linear-chirp
+assumption -- only every existing implementation of it is.
+(`examples/nonlinear_lorawan_experiments.py`, `tests/test_nonlinear_lorawan.py`.)
+
+**12.1 Narrowband, on the real trajectory.** Same constant-20kHz and
+UAV-reversal profiles, same real Hamming/CRC framing, same AFC tracking as
+§11.2, now physically carried on a genuine hyperbolic waveform rather than
+a linear stand-in. Both PHYs hold a clean waterfall well below 0dB SNR for
+both profiles -- but hyperbolic sits consistently 1-2dB above linear at
+the transition knee, not the null result §4 would predict for baseline
+decode margin (checked directly: baseline SER with no CFO/acquisition is
+statistically identical between the two shapes at this configuration).
+The gap is in acquisition: at 20kHz true CFO, $-14$dB SNR, 8-burst-combined
+`joint_cfo_symbol_search`, linear fails to acquire on roughly half of 40
+trials; hyperbolic essentially never does. This has a real, not
+hand-waved, explanation: a linear chirp's ambiguity function is sheared
+(CFO and symbol-shift errors partially substitute for each other), the
+classical reason sonar/radar literature favors HFM (Kroszczyński 1969,
+already cited in §9) -- HFM's own ambiguity function lacks that coupling.
+§9 made this case from the matched-filter side; this is the same property
+surfacing, unprompted, inside this project's own joint acquisition search.
+(`examples/output/30_nonlinear_lorawan_pass_rate.png`.)
+
+**12.2 Wideband: a capability, not a performance edge.** §10's paired-sweep
+correction, run inside a genuinely real Hamming FEC + interleaved +
+whitened + Gray-coded + CRC16-checked packet at $\alpha=1.05$ (past this
+configuration's own half-bin threshold $\approx1.004$). Corrected: a clean
+waterfall to roughly $-14$ to $-16$dB SNR. Uncorrected: flat at 0% across
+the entire tested range, $+5$ to $-20$dB -- not a degraded curve, a wall.
+The reason this is categorical rather than a harder case of the same
+problem: the paired-sweep closed form is derived from HFM's own exact
+self-similarity theorem (§5.2), which a linear chirp does not have, so
+there is no correction to even attempt on a linear PHY for this channel
+model. A real LoRaWAN radio has no path to surviving this condition at
+all; this project's own receiver, running its own trajectory with the
+actual protocol machinery intact, does.
+(`examples/output/31_nonlinear_lorawan_wideband_scale.png`,
+`tests/test_nonlinear_lorawan.py::test_wideband_scale_packet_recovered_only_when_corrected`.)
+
+The project's central claim, stated as concretely as the evidence
+supports: not "nonlinear trajectories are better LoRa," but "a real
+LoRaWAN link, carried on a trajectory no real radio can generate, gains a
+capability no real radio can have" -- contingent on something eventually
+being able to transmit and receive that trajectory, which today means this
+project's own simulation, not commercial silicon.
 
 ---
 
