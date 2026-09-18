@@ -138,6 +138,16 @@ trajectories at SF7 / 125 kHz (a standard LoRa configuration):
   same style as `01_frequency_trajectories.png` but for a single shape and
   symbol instead of every shape's `m=0` base. The wrap point where the
   trajectory's end folds back to its start is marked directly.
+- **`29_hyperbolic_vs_linear_spectrogram.png`** -- a real time-frequency
+  spectrogram (not just `f(t)` vs `t`) of symbol 33, linear next to
+  hyperbolic, both decoded correctly by this project's own
+  `fft_correlation_demod` at 10dB SNR -- the curved sweep, and this
+  project's own decoder handling it, made directly visible. The
+  counterpart to `examples/interference_experiments.py`'s
+  `28_lorawan_sf_spectrogram.png`: that figure is built entirely on
+  `lora_phy` (real commercial LoRa hardware), which can only ever generate
+  or decode a straight line, so it can't show this -- this project's own
+  trajectory/decoder always could.
 - **`15_dechirp_linear_vs_hyperbolic.png`** -- the same symbol (33),
   dechirped, linear vs. hyperbolic. Linear's dechirped instantaneous
   frequency is piecewise-constant (two flat levels, one full bandwidth `B`

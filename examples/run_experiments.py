@@ -51,6 +51,13 @@ g(t/T). Produces PNGs under examples/output/:
                                     ratio + calibration curve? Quadratic/exponential: yes,
                                     cleanly. Sigmoid: a real, characterized exception near
                                     the edges of the alpha range.
+  29_hyperbolic_vs_linear_spectrogram.png - a real time-frequency spectrogram of this
+                                    project's own hyperbolic trajectory next to a linear
+                                    one, both decoded correctly by fft_correlation_demod at
+                                    10dB SNR -- the direct visual counterpart to
+                                    interference_experiments.py's 28_lorawan_sf_spectrogram.png,
+                                    which (being built entirely on lora_phy, real commercial
+                                    LoRa hardware) can only ever show straight lines.
 
 Run with: python examples/run_experiments.py
 """
@@ -61,6 +68,7 @@ from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal import spectrogram
 
 from nlfsc_lora.afc import AFCLoop, KalmanAFCLoop, run_afc_sequence
 from nlfsc_lora.channel import apply_doppler_scale, awgn
@@ -978,6 +986,52 @@ def plot_paired_sweep_shape_generalization():
     plt.close(fig)
 
 
+def plot_hyperbolic_vs_linear_spectrogram(m: int = 33, snr_db: float = 10.0):
+    """A real time-frequency spectrogram of this project's own hyperbolic
+    trajectory next to a linear one -- the thing 28_lorawan_sf_spectrogram.png
+    (examples/interference_experiments.py) can *not* show, since that figure
+    is built entirely from lora_phy, an external reference implementation of
+    real commercial LoRa hardware, and real hardware only ever generates a
+    straight-line sweep. This project's own trajectory, decoder, and
+    receiver have supported an arbitrary curved g(u) from the start
+    (chirp.py, receiver.py::fft_correlation_demod) -- that generality is the
+    actual point of the project, and this is the direct visual proof of it:
+    the hyperbolic panel's own curve, plus this project's own decoder
+    reading the correct symbol back off it at a real, noisy SNR.
+
+    Same symbol (m=33, matching 15_dechirp_linear_vs_hyperbolic.png and
+    16_hyperbolic_symbol33_waveform.png) so this is directly comparable to
+    those two -- this is the spectrogram version of the same underlying
+    waveform those figures already show as f(t) and |FFT|."""
+    g_lin, _ = TRAJECTORIES["linear"]
+    g_hyp, _ = TRAJECTORIES["hyperbolic"]
+    cfg_lin = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g_lin, f_center=0.0)
+    cfg_hyp = ChirpConfig(sf=SF, bandwidth=BANDWIDTH, sample_rate=OVERSAMPLING * BANDWIDTH, g=g_hyp,
+                           f_center=hyperbolic_center_freq(BANDWIDTH))
+
+    rng = np.random.default_rng(SEED)
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.8))
+    for ax, cfg, name in [(axes[0], cfg_lin, "linear"), (axes[1], cfg_hyp, "hyperbolic")]:
+        tx = symbol_waveform(cfg, m)
+        rx = awgn(tx, snr_db, rng)
+        m_hat = fft_correlation_demod(rx, cfg)
+
+        f, t, Sxx = spectrogram(rx, fs=cfg.sample_rate, nperseg=32, noverlap=28,
+                                 return_onesided=False, mode="magnitude")
+        f = np.fft.fftshift(f) - (cfg.f_center if name == "hyperbolic" else 0.0)
+        Sxx = np.fft.fftshift(Sxx, axes=0)
+        im = ax.pcolormesh(t * 1e3, f / 1e3, 20 * np.log10(Sxx + 1e-6), shading="gouraud", cmap="magma")
+        ax.set(xlabel="time (ms)", ylabel="f(t) - f_center (kHz)",
+               ylim=(-BANDWIDTH / 1.5 / 1e3, BANDWIDTH / 1.5 / 1e3),  # same window both panels -- focus on the swept band, not the full Nyquist range
+               title=f"{name}: symbol {m}, {snr_db:.0f}dB SNR\ndecoded m={m_hat} ({'correct' if m_hat == m else 'WRONG'})")
+        fig.colorbar(im, ax=ax, label="magnitude (dB)")
+
+    fig.suptitle("This project's own decoder on this project's own curved trajectory -- not lora_phy, which can't generate or decode this")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT_DIR, "29_hyperbolic_vs_linear_spectrogram.png"), dpi=150)
+    plt.close(fig)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     plot_trajectories()
@@ -1001,6 +1055,7 @@ def main():
     plot_afc_rate_of_change_limit()
     plot_paired_sweep_doppler_correction()
     plot_paired_sweep_shape_generalization()
+    plot_hyperbolic_vs_linear_spectrogram()
     print(f"Wrote figures to {OUT_DIR}")
 
 
