@@ -119,8 +119,15 @@ def plot_leakage_matrix(matrix):
 
 
 def experiment_capacity_scaling():
+    """SNR range deliberately runs low enough (-20dB) that a single stream
+    (K=1) shows its own ordinary noise-driven SER curve, not just a floor
+    at zero -- the point of this sweep is to contrast a noise-limited
+    regime (K=1-2, where more SNR keeps helping) against an
+    interference-limited one (K=4-5, where SER stops responding to SNR at
+    all because the other streams' own signal power, not the noise floor,
+    is what's causing the errors)."""
     cfgs_all = [make_cfg(s) for s in SHAPES]
-    snr_range = np.arange(-6, 13, 2)
+    snr_range = np.arange(-20, 13, 2)
     n_trials = 300
     results = {}
     for k in [1, 2, 3, 4, 5]:

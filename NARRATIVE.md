@@ -1872,6 +1872,89 @@ story is the narrowband one told here, not the wideband one.
 Implementation: `examples/leo_satellite_experiments.py`. Tests:
 `tests/test_leo_satellite.py`.
 
+## Trajectory-domain multiplexing: a MIMO-style idea unique to this project
+
+Every result so far has been about one stream at a time: does it survive
+Doppler, does it acquire reliably, does it carry a real packet. This asks a
+different question: can more than one stream share the exact same band and
+time slot at once, the way MIMO's spatial streams or LoRaWAN's own
+different spreading factors do — but separated along a dimension no real
+chipset has, trajectory *shape* itself?
+
+The mechanism isn't new. `fft_correlation_demod` has relied since Chapter 4
+on the fact that correlating a received signal against the *wrong*
+trajectory smears its energy across many lags instead of concentrating it
+in one — that's how it stays robust against noise. `interference_experiments.py`
+already showed a version of the same idea operating between real LoRaWAN
+packets at *different spreading factors* sharing one channel
+(`28_lorawan_sf_spectrogram.png`): different sweep rates only coincide
+briefly, so they interfere far less than same-SF collisions. Trajectory
+shape is a second, independent axis of exactly that kind of separation —
+two differently-shaped sweeps at the *same* SF still trace different
+curves through the same band almost everywhere. No real hardware has this
+dimension at all, since no real chipset generates more than one trajectory
+shape; it falls out of this project's own receiver for free.
+
+`nlfsc_lora/trajectory_mux.py` is almost nothing new: `mix_streams` sums
+several `symbol_waveform` calls (one per stream, sharing one band via a
+common `f_center`), and `demux_stream` is `fft_correlation_demod`, called
+once per stream against its own trajectory. The interesting part is
+whether it actually separates — measured, not assumed, in
+`examples/trajectory_mimo_experiments.py`.
+
+![Cross-trajectory leakage matrix: how much a pure shape-i signal looks like a valid symbol to a shape-j receiver](pictures/33_trajectory_mimo_leakage_matrix.png)
+
+**How separable are the shapes?** For every pair, this measures how much a
+*pure* single-shape signal (no noise, no other stream) looks like a valid
+symbol to a *different* shape's receiver — 1.0 would mean indistinguishable,
+0 would mean perfectly orthogonal. The diagonal is exactly 1.0 by
+construction; every off-diagonal entry sits well below it, mostly in the
+0.2–0.4 range. The one clear exception is exponential/hyperbolic
+(0.52 both ways) — both shapes concentrate most of their sweep near one end
+of the symbol, so they resemble each other more than they resemble the
+others. That's a real, specific, checkable prediction (not hand-waved):
+shapes that *look* more alike in $df/dt$ leak into each other more.
+
+![Trajectory-multiplexed capacity and near-far sensitivity](pictures/34_trajectory_mimo_capacity_and_nearfar.png)
+
+**How many streams can actually share a slot?** The left panel sweeps SNR
+low enough (down to $-20$dB) to show a single stream's own ordinary
+noise-driven SER curve, then asks what happens as more equal-power streams
+join. $K=1$ and $K=2$ fall to zero error by about $-12$dB and keep
+improving with SNR — a normal, noise-limited curve. $K=4$ and $K=5$ do not:
+past roughly $-8$dB they stop responding to more SNR at all and settle
+into a flat floor (mean SER $\approx0.26\%$ for $K=4$, $\approx1.1\%$ for
+$K=5$, averaged over $-6$ to $+12$dB). That floor is caused by the *other
+streams' own signal power*, not the channel noise — more SNR cannot fix
+it, because it was never the bottleneck. This is exactly what should
+happen when five equal-power streams share one slot: each one's own
+signal is only $1/5$ of the total received power, an unavoidable
+mutual-interference floor no amount of transmit power on any single stream
+removes.
+
+**What happens when the streams aren't equal power?** The right panel
+fixes a victim (linear) at a comfortable $10$dB SNR and grows a second
+stream's (hyperbolic) power relative to it. The victim decodes perfectly
+up to about $+6$dB of aggressor advantage, then fails sharply: SER crosses
+50% at $+10$dB and saturates near 100% by $+18$dB — a real near-far
+problem, the same practical limitation real MIMO and CDMA systems have to
+manage with power control, not something trajectory-domain separation is
+immune to just because it's a new idea.
+
+The honest shape of this result: trajectory-domain multiplexing is a real,
+usable second dimension of separation this project's own receiver gets for
+free and no real hardware has at all — but it is *approximate*
+separation, not orthogonal-code perfect, and it has the same practical
+limits (a capacity ceiling as stream count grows, a near-far sensitivity
+to power imbalance) any real multi-user scheme has to manage. That
+qualification is what makes the two positive findings (up to about four
+equal-power streams essentially free, and a well-behaved, predictable
+degradation past that point) trustworthy rather than asserted.
+
+Implementation: `nlfsc_lora/trajectory_mux.py`,
+`examples/trajectory_mimo_experiments.py`. Tests:
+`tests/test_trajectory_mux.py`.
+
 ---
 
 ## Where to go from here

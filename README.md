@@ -111,6 +111,7 @@ trajectory stops being a straight line, and which don't.
 pip install -e .[dev]
 pytest                       # correctness checks (dechirp, demod, metrics)
 python examples/run_experiments.py   # writes comparison plots to examples/output/
+python examples/trajectory_mimo_experiments.py  # writes 33/34_trajectory_mimo_*.png
 ```
 
 Optional: `pip install -e .[refcheck]` (pinned to `lora_phy==0.2.0`, a real
@@ -671,6 +672,24 @@ rather than duplicated here:
   number, not an RF satellite one (real LEO alpha is ~1.000025). See
   "Cross-validation against a real LoRaWAN PHY" below / NARRATIVE.md's
   "Could It Actually Work?" / PAPER.md §12.
+- **Trajectory-domain multiplexing: a MIMO-style idea unique to this
+  project.** Can more than one stream share the same band and time slot at
+  once, separated by trajectory *shape* instead of antenna geometry
+  (spatial MIMO) or spreading factor (real LoRaWAN's own multiplexing
+  dimension)? `fft_correlation_demod` already smears a wrong-trajectory
+  correlation across many lags instead of one -- the same mechanism behind
+  SF quasi-orthogonality above, one level more general, and unavailable to
+  real hardware since no chipset generates more than one shape.
+  Characterized, not assumed: a 5-shape leakage matrix shows the diagonal
+  at 1.0 and every off-diagonal well below it (with one real, explicable
+  exception -- exponential/hyperbolic leak into each other more because
+  both concentrate their sweep near one end of the symbol); up to 4
+  equal-power streams share a slot essentially for free, 5 settles into a
+  real, non-SNR-fixable interference floor (~1.1% mean SER); and a
+  near-far sweep shows the expected real limitation -- a victim decoding
+  perfectly at balanced power fails sharply once an interferer swamps it
+  by more than ~10dB. See NARRATIVE.md's "Trajectory-Domain Multiplexing"
+  / PAPER.md §13.
 
 ## Cross-validation against a real LoRaWAN PHY
 
