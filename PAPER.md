@@ -659,6 +659,7 @@ Implementation: `examples/packet_experiments.py::test4_wideband_doppler_scale`;
 | ADR spreading-factor switch; Hz/s-safe reacquisition | §11.5 | `examples/adr_experiments.py`, `duty_cycle_experiments.py::predicted_center_hz_per_s` | `test_adr.py::test_predicted_center_hz_per_s_is_accurate_across_every_sf_transition` |
 | Real LoRaWAN framing on this project's own hyperbolic PHY | §12 | `examples/nonlinear_lorawan_experiments.py` | `test_nonlinear_lorawan.py::test_wideband_scale_packet_recovered_only_when_corrected` |
 | Linear FM ambiguity-function coupling degrades acquisition | §12.1 | `sync.py::joint_cfo_symbol_search` | `test_nonlinear_lorawan.py::test_acquisition_is_more_reliable_for_hyperbolic_than_linear_under_cfo` |
+| Real LEO satellite pass (orbital mechanics), and alpha=1.05's true domain | §12.3 | `examples/leo_satellite_experiments.py` | `test_leo_satellite.py::test_hyperbolic_beats_linear_across_a_full_leo_pass` |
 
 ## 8. Comparison with standard LoRa, and when this applies
 
@@ -1141,6 +1142,38 @@ LoRaWAN link, carried on a trajectory no real radio can generate, gains a
 capability no real radio can have" -- contingent on something eventually
 being able to transmit and receive that trajectory, which today means this
 project's own simulation, not commercial silicon.
+
+**12.3 A real pass: LEO satellite Doppler, from orbital mechanics.** §12.1's
+profiles were chosen for illustration; this asks what an actual satellite
+pass looks like. A 550km LEO satellite moves at $\approx7.6$km/s (vis-viva);
+treating the pass as a flat-Earth straight-line flyover -- the standard
+approximation near zenith in the CubeSat/satellite-IoT Doppler literature
+-- gives an 868MHz Doppler curve running $+22$ to $-22$kHz, in line with
+published figures for real sub-GHz LEO systems (Iridium's $\pm37$kHz at
+1.6GHz scales to almost exactly this). Feeding each packet's own
+burst-by-burst instantaneous Doppler (capturing in-packet drift, largest
+at closest approach where the Doppler *rate* peaks) through the same
+pipeline at $-15$dB SNR: hyperbolic holds a mean packet-CRC pass rate of
+96.6% across the full pass (min 88%); linear averages 38.3% (min 16%, max
+60%). The gap is not confined to the high-CFO wings §12.1's isolated
+20kHz test might suggest -- it holds throughout, closest approach
+included -- pointing at something more general than the earlier finding:
+at this SNR, hyperbolic's acquisition appears more robust across the
+board, not only when CFO happens to be large (plausibly related to
+`02_autocorrelation.png`'s lower sidelobes, though this experiment did not
+set out to isolate that mechanism).
+
+This also settles whether $\alpha=1.05$ (§12.2's wideband demo) is a
+realistic RF satellite number. It is not: a Doppler *scale* departs from 1
+by $v/c_{\text{signal}}$, and even this satellite's velocity gives
+$\alpha\approx1.000025$ -- five orders of magnitude below 1.05, which for
+RF would need $v\approx15{,}000$km/s. But water's speed of sound is only
+$\approx1500$m/s, so the same $\alpha=1.05$ needs just $\approx75$m/s of
+relative velocity -- well within a fast underwater vehicle's range. That
+number was always implicitly acoustic/sonar-domain, consistent with
+paired-sweep's own DHFM heritage (§9), not a claim about satellites; the
+satellite story is the narrowband one, told here.
+(`examples/leo_satellite_experiments.py`, `tests/test_leo_satellite.py`.)
 
 ---
 

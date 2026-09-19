@@ -664,8 +664,13 @@ rather than duplicated here:
   that defeats every trajectory shape when uncorrected -- a real,
   CRC-checked packet survives when paired-sweep-corrected and fails
   completely when it isn't, with no correction mechanism even available on
-  a linear PHY. See "Cross-validation against a real LoRaWAN PHY" below /
-  NARRATIVE.md's "Could It Actually Work?" / PAPER.md §12.
+  a linear PHY. A real LEO satellite pass, computed from orbital mechanics
+  rather than an illustrative profile, confirms the narrowband edge holds
+  up broadly across an actual ten-minute pass (96.6% vs. 38.3% mean packet
+  pass rate) and clarifies that alpha=1.05 is an acoustic/sonar-domain
+  number, not an RF satellite one (real LEO alpha is ~1.000025). See
+  "Cross-validation against a real LoRaWAN PHY" below / NARRATIVE.md's
+  "Could It Actually Work?" / PAPER.md §12.
 
 ## Cross-validation against a real LoRaWAN PHY
 
@@ -682,12 +687,13 @@ carrying real protocol framing over this project's own PHY.
 ```
 pip install -e .[refcheck]
 pytest tests/test_reference_crossval.py tests/test_lorawan_framing.py tests/test_duty_cycle.py \
-       tests/test_interference.py tests/test_adr.py tests/test_nonlinear_lorawan.py
+       tests/test_interference.py tests/test_adr.py tests/test_nonlinear_lorawan.py tests/test_leo_satellite.py
 python examples/lorawan_experiments.py     # writes 24_lorawan_packet_pass_rate.png
 python examples/duty_cycle_experiments.py  # writes 25_duty_cycle_reacquisition.png
 python examples/interference_experiments.py  # writes 26_lorawan_interference.png, 28_lorawan_sf_spectrogram.png
 python examples/adr_experiments.py           # writes 27_adr_reacquisition.png
 python examples/nonlinear_lorawan_experiments.py  # writes 30/31_nonlinear_lorawan_*.png
+python examples/leo_satellite_experiments.py      # writes 32_leo_satellite_pass.png
 ```
 
 - **`tests/test_reference_crossval.py`** -- this project's baseline (`m=0`)
@@ -775,6 +781,20 @@ python examples/nonlinear_lorawan_experiments.py  # writes 30/31_nonlinear_loraw
   -- the paired-sweep closed form depends on HFM's own exact self-
   similarity theorem -- so this isn't a harder case for real hardware,
   it's a capability real hardware structurally cannot have at all.
+- **`32_leo_satellite_pass.png`** -- what real LEO satellite Doppler
+  actually looks like, computed from orbital mechanics (550km altitude,
+  ~7.6km/s, 868MHz carrier -- flat-Earth closest-approach model, Doppler
+  peaking around +/-22kHz, in line with published sub-GHz LEO figures),
+  driven through the same real-LoRaWAN-framed packet pipeline at -15dB
+  SNR. Hyperbolic holds a 96.6% mean packet-CRC pass rate across the full
+  ten-minute pass (min 88%); linear averages 38.3% (min 16%, max 60%) --
+  and the gap isn't confined to the high-CFO wings, it holds up broadly
+  across the pass, including at closest approach. Also settles what
+  alpha=1.05 in the wideband demo actually represents: real LEO Doppler
+  *scale* is only ~1.000025 (v/c), five orders of magnitude below 1.05 --
+  reaching 1.05 needs ~15,000km/s for RF but just ~75m/s relative to the
+  speed of sound underwater, an acoustic/sonar-domain number, not a
+  satellite one.
 
 ## Extending it
 
